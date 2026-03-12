@@ -72,9 +72,10 @@ function LoadingState() {
   const steps = [
     "Reading listing details...",
     "Researching comparable sales...",
-    "Assessing area risk factors...",
-    "Analysing market positioning...",
-    "Evaluating negotiation leverage...",
+    "Projecting capital growth...",
+    "Assessing benefits and opportunities...",
+    "Evaluating risk factors...",
+    "Building negotiation strategy...",
     "Generating buyer psychology profile...",
     "Compiling your property report..."
   ];
@@ -146,6 +147,80 @@ function AnalysisReport({ data }) {
         </div>
         <p style={bodyText}>{analysis.priceAssessment.detail}</p>
       </SectionCard>
+
+      {/* Comparative Valuation */}
+      {analysis.comparativeValuation && (
+        <SectionCard title="Comparative Valuation" icon="⚖️">
+          {analysis.comparativeValuation.pricePerSqm && (
+            <div style={{background:'#f9fafb',borderRadius:'8px',padding:'12px 16px',marginBottom:'12px'}}>
+              <p style={{fontSize:'13px',color:'#6b7280'}}>Price per sqm: <strong style={{color:'#111827'}}>{analysis.comparativeValuation.pricePerSqm}</strong></p>
+            </div>
+          )}
+          <p style={bodyText}>{analysis.comparativeValuation.detail}</p>
+          {analysis.comparativeValuation.recentComparables && analysis.comparativeValuation.recentComparables.length > 0 && (
+            <div style={{marginTop:'12px'}}>
+              <p style={{fontSize:'12px',fontWeight:500,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'8px'}}>Recent comparable sales</p>
+              {analysis.comparativeValuation.recentComparables.map((comp, i) => (
+                <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',padding:'8px 0',borderTop: i>0?'1px solid #f3f4f6':'none',gap:'12px',flexWrap:'wrap'}}>
+                  <div>
+                    <p style={{fontSize:'13px',fontWeight:500,color:'#111827'}}>{comp.address}</p>
+                    <p style={{fontSize:'12px',color:'#6b7280'}}>{comp.notes}</p>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <p style={{fontSize:'13px',fontWeight:600,color:'#111827'}}>{comp.price}</p>
+                    <p style={{fontSize:'12px',color:'#6b7280'}}>{comp.date}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {/* Capital Growth Projection */}
+      {analysis.capitalGrowth && (
+        <SectionCard title="Capital Growth Projection" icon="📊">
+          <div style={{display:'flex',gap:'12px',marginBottom:'12px',flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:'140px',background:'#f0fdf4',borderRadius:'8px',padding:'12px 16px',textAlign:'center'}}>
+              <p style={{fontSize:'11px',fontWeight:500,color:'#065f46',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'4px'}}>5-Year Projection</p>
+              <p style={{fontSize:'20px',fontWeight:700,color:'#065f46'}}>{analysis.capitalGrowth.fiveYear}</p>
+            </div>
+            <div style={{flex:1,minWidth:'140px',background:'#f0fdf4',borderRadius:'8px',padding:'12px 16px',textAlign:'center'}}>
+              <p style={{fontSize:'11px',fontWeight:500,color:'#065f46',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'4px'}}>10-Year Projection</p>
+              <p style={{fontSize:'20px',fontWeight:700,color:'#065f46'}}>{analysis.capitalGrowth.tenYear}</p>
+            </div>
+          </div>
+          <div style={{marginBottom:'12px'}}>
+            <span style={{fontSize:'12px',color:'#6b7280'}}>Confidence: {analysis.capitalGrowth.confidence}</span>
+          </div>
+          <p style={bodyText}>{analysis.capitalGrowth.detail}</p>
+          {analysis.capitalGrowth.drivers && analysis.capitalGrowth.drivers.length > 0 && (
+            <div style={{background:'#f0fdf4',borderRadius:'8px',padding:'16px',marginTop:'12px'}}>
+              <p style={{fontSize:'12px',fontWeight:500,color:'#065f46',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'8px'}}>Key growth drivers</p>
+              {analysis.capitalGrowth.drivers.map((driver, i) => (
+                <div key={i} style={{display:'flex',gap:'8px',marginBottom:'6px'}}>
+                  <span style={{color:'#34d399',flexShrink:0}}>→</span>
+                  <p style={{fontSize:'13px',color:'#065f46',lineHeight:'1.5'}}>{driver}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {/* Benefits & Opportunities */}
+      {analysis.benefits && analysis.benefits.length > 0 && (
+        <SectionCard title="Benefits & Opportunities" icon="✅">
+          {analysis.benefits.map((benefit, i) => (
+            <div key={i} style={{paddingTop: i>0?'16px':'0',marginTop: i>0?'16px':'0',borderTop: i>0?'1px solid #f3f4f6':'none'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'6px'}}>
+                <span style={{fontSize:'14px',fontWeight:500,color:'#111827'}}>{benefit.category}</span>
+              </div>
+              <p style={bodyText}>{benefit.detail}</p>
+            </div>
+          ))}
+        </SectionCard>
+      )}
 
       <SectionCard title="Time on Market" icon="⏱️">
         <div style={{marginBottom:'12px'}}>
