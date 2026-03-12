@@ -20,130 +20,23 @@ input:focus, textarea:focus, select:focus { outline: none; box-shadow: 0 0 0 2px
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 
-const SYSTEM_PROMPT = `You are PropertyIQ, an expert Australian property analyst and buyer's advisor. You combine deep market knowledge with buyer psychology expertise to help people make smarter property decisions.
+const WORKER_URL = "https://property-iq.falling-truth-0423.workers.dev";
 
-When analysing a property listing, you must return a JSON object (and ONLY a JSON object, no markdown, no backticks) with this exact structure:
-
-{
-  "listing": {
-    "address": "Full address",
-    "price": "Listed price or price guide",
-    "type": "House/Apartment/Townhouse/etc",
-    "beds": 3,
-    "baths": 1,
-    "parking": 1,
-    "land": "Land size if available or N/A",
-    "daysOnMarket": null,
-    "agent": "Agency name if known or N/A",
-    "description": "Brief 1-2 sentence summary of the listing"
-  },
-  "analysis": {
-    "priceAssessment": {
-      "verdict": "Likely Overpriced / Fair Value / Potential Deal / Insufficient Data",
-      "confidence": "Low / Medium / High",
-      "detail": "2-3 sentences analysing the price relative to comparable sales, condition, and market position."
-    },
-    "timeOnMarket": {
-      "signal": "Just Listed / Normal Range / Seller Pressure Building / Stale Listing / Unknown",
-      "detail": "2-3 sentences about what the time on market tells us about seller motivation and negotiation leverage."
-    },
-    "risks": [
-      {
-        "category": "Risk category name",
-        "level": "Low / Low-Medium / Medium / High",
-        "detail": "2-3 sentences about this specific risk and what the buyer should investigate."
-      }
-    ],
-    "negotiation": {
-      "strategy": "Strategy name",
-      "openingOffer": "Suggested opening offer range",
-      "detail": "3-4 sentences on negotiation approach, leverage points, and tactics.",
-      "psychologyNotes": [
-        "Tactical note about agent/vendor psychology",
-        "Another tactical note",
-        "A third tactical note"
-      ]
-    },
-    "areaOutlook": {
-      "trajectory": "Strong Growth / Moderate Growth / Stable / Declining / Mixed Signals",
-      "detail": "2-3 sentences on suburb trajectory, infrastructure, demographic trends."
-    },
-    "buyerPsychology": {
-      "flags": [
-        {
-          "bias": "Name of cognitive bias",
-          "warning": "2-3 sentences explaining how this bias might affect the buyer's judgment on this specific property."
-        }
-      ]
-    },
-    "summary": "3-4 sentence bottom-line assessment. Be direct about whether this is worth pursuing and at what price. Include the most important action items."
-  }
-}
-
-Important guidelines:
-- Use Australian English spelling (analyse, colour, metre, etc.)
-- Reference Australian-specific factors: stamp duty, strata, council rates, bushfire/flood zones, ANEF contours for airport noise, Section 32/Contract for Sale
-- Be specific with dollar amounts in AUD
-- Include 3-5 risk factors relevant to this specific property
-- Include 3 buyer psychology flags relevant to the situation
-- If you receive a URL, extract whatever you can from the URL itself (suburb, property type, platform) and use your knowledge of that area
-- If information is missing, make reasonable inferences but flag your confidence level
-- Be direct and actionable
-- When you don't have enough data, say so clearly rather than guessing
-- Always recommend building and pest inspection for houses/townhouses
-- Factor in renovation costs when a property is described as needing work`;
-
-/* --- API Call --- */
-async function analyseProperty(apiKey, listingUrl, manualDetails) {
-  let userMessage;
-  if (listingUrl) {
-    userMessage = "Please analyse this Australian property listing. Here is the listing URL: " + listingUrl + "\n\nExtract whatever details you can infer from the URL (suburb, property type, etc.) and provide your full analysis. If the URL contains a suburb name, use your knowledge of that area for comparable sales, risk factors, and area outlook.";
-  } else if (manualDetails) {
-    userMessage = "Please analyse this Australian property based on the following details:\n\n";
-    if (manualDetails.address) userMessage += "Address: " + manualDetails.address + "\n";
-    if (manualDetails.suburb) userMessage += "Suburb: " + manualDetails.suburb + ", " + manualDetails.state + "\n";
-    if (manualDetails.price) userMessage += "Asking Price: " + manualDetails.price + "\n";
-    if (manualDetails.type) userMessage += "Property Type: " + manualDetails.type + "\n";
-    if (manualDetails.beds) userMessage += "Bedrooms: " + manualDetails.beds + "\n";
-    if (manualDetails.baths) userMessage += "Bathrooms: " + manualDetails.baths + "\n";
-    if (manualDetails.parking) userMessage += "Parking: " + manualDetails.parking + "\n";
-    if (manualDetails.land) userMessage += "Land Size: " + manualDetails.land + "\n";
-    if (manualDetails.daysOnMarket) userMessage += "Days on Market: " + manualDetails.daysOnMarket + "\n";
-    if (manualDetails.agent) userMessage += "Agent: " + manualDetails.agent + "\n";
-    if (manualDetails.notes) userMessage += "\nBuyer's Notes: " + manualDetails.notes + "\n";
-    userMessage += "\nProvide your full analysis.";
-  }
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+/* --- API Call via Cloudflare Worker --- */
+async function analyseProperty(listingUrl, manualDetails) {
+  const response = await fetch(WORKER_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userMessage }]
-    })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ listingUrl, manualDetails })
   });
 
+  const data = await response.json();
+
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || "API request failed (" + response.status + ")");
+    throw new Error(data.error || "Analysis failed (" + response.status + ")");
   }
 
-  const data = await response.json();
-  const text = data.content[0].text;
-
-  let jsonStr = text;
-  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (jsonMatch) jsonStr = jsonMatch[1];
-  jsonStr = jsonStr.trim();
-
-  return JSON.parse(jsonStr);
+  return data;
 }
 
 /* --- Utility Components --- */
@@ -200,7 +93,7 @@ function LoadingState() {
       <div style={{textAlign:'center'}}>
         {steps.map((step, i) => (
           <p key={i} style={{fontSize:'14px',padding:'3px 0',transition:'all 0.3s',color: i<=current ? '#111827' : '#d1d5db',fontWeight: i===current ? 500 : 400}}>
-            {i < current ? "\u2713 " : i === current ? "\u2192 " : "  "}{step}
+            {i < current ? "✓ " : i === current ? "→ " : "  "}{step}
           </p>
         ))}
       </div>
@@ -216,7 +109,7 @@ function PropertyDetails({ listing }) {
       <div style={{display:'flex',flexWrap:'wrap',justifyContent:'space-between',gap:'16px'}}>
         <div>
           <h2 style={{fontSize:'18px',fontWeight:600,color:'#111827',marginBottom:'4px'}}>{listing.address}</h2>
-          <p style={{fontSize:'13px',color:'#6b7280'}}>{listing.agent && listing.agent !== "N/A" ? listing.agent : ""}{listing.daysOnMarket ? " \u00b7 Listed " + listing.daysOnMarket + " days ago" : ""}</p>
+          <p style={{fontSize:'13px',color:'#6b7280'}}>{listing.agent && listing.agent !== "N/A" ? listing.agent : ""}{listing.daysOnMarket ? " · Listed " + listing.daysOnMarket + " days ago" : ""}</p>
         </div>
         <div style={{textAlign:'right'}}>
           <p style={{fontSize:'24px',fontWeight:700,color:'#111827'}}>{listing.price}</p>
@@ -254,7 +147,7 @@ function AnalysisReport({ data }) {
         <p style={bodyText}>{analysis.priceAssessment.detail}</p>
       </SectionCard>
 
-      <SectionCard title="Time on Market" icon={"\u23f1\ufe0f"}>
+      <SectionCard title="Time on Market" icon="⏱️">
         <div style={{marginBottom:'12px'}}>
           <Badge text={analysis.timeOnMarket.signal} bg="#fef3c7" color="#92400e" border="#fde68a" />
         </div>
@@ -262,7 +155,7 @@ function AnalysisReport({ data }) {
       </SectionCard>
 
       {analysis.risks && analysis.risks.length > 0 && (
-        <SectionCard title="Risk Factors" icon={"\u26a0\ufe0f"}>
+        <SectionCard title="Risk Factors" icon="⚠️">
           {analysis.risks.map((risk, i) => (
             <div key={i} style={{paddingTop: i>0?'16px':'0',marginTop: i>0?'16px':'0',borderTop: i>0?'1px solid #f3f4f6':'none'}}>
               <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'6px'}}>
@@ -275,7 +168,7 @@ function AnalysisReport({ data }) {
         </SectionCard>
       )}
 
-      <SectionCard title="Negotiation Strategy" icon={"\ud83e\udd1d"}>
+      <SectionCard title="Negotiation Strategy" icon="🤝">
         <div style={{marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
           <Badge text={analysis.negotiation.strategy} bg="#dbeafe" color="#1e40af" border="#bfdbfe" />
           <span style={{fontSize:'13px',color:'#4b5563'}}>Opening range: <strong style={{color:'#111827'}}>{analysis.negotiation.openingOffer}</strong></span>
@@ -286,7 +179,7 @@ function AnalysisReport({ data }) {
             <p style={{fontSize:'12px',fontWeight:500,color:'#1e40af',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'10px'}}>Watch for these tactics</p>
             {analysis.negotiation.psychologyNotes.map((note, i) => (
               <div key={i} style={{display:'flex',gap:'8px',marginBottom:'8px'}}>
-                <span style={{color:'#60a5fa',flexShrink:0}}>{"\u2192"}</span>
+                <span style={{color:'#60a5fa',flexShrink:0}}>→</span>
                 <p style={{fontSize:'13px',color:'#1e3a8a',lineHeight:'1.55'}}>{note}</p>
               </div>
             ))}
@@ -294,7 +187,7 @@ function AnalysisReport({ data }) {
         )}
       </SectionCard>
 
-      <SectionCard title="Area Outlook" icon={"\ud83d\udcc8"}>
+      <SectionCard title="Area Outlook" icon="📈">
         <div style={{marginBottom:'12px'}}>
           <Badge text={analysis.areaOutlook.trajectory} bg="#d1fae5" color="#065f46" border="#a7f3d0" />
         </div>
@@ -302,7 +195,7 @@ function AnalysisReport({ data }) {
       </SectionCard>
 
       {analysis.buyerPsychology && analysis.buyerPsychology.flags && analysis.buyerPsychology.flags.length > 0 && (
-        <SectionCard title="Buyer Psychology Check" icon={"\ud83e\udde0"}>
+        <SectionCard title="Buyer Psychology Check" icon="🧠">
           <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'16px'}}>Cognitive biases that may be affecting your assessment of this property.</p>
           {analysis.buyerPsychology.flags.map((flag, i) => (
             <div key={i} style={{paddingTop: i>0?'16px':'0',marginTop: i>0?'16px':'0',borderTop: i>0?'1px solid #f3f4f6':'none'}}>
@@ -338,7 +231,7 @@ function ManualEntryForm({ onAnalyse, onBack }) {
     <div style={{background:'#fff',borderRadius:'12px',border:'1px solid #e5e7eb',padding:'24px'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px'}}>
         <h3 style={{fontSize:'15px',fontWeight:600,color:'#111827'}}>Property Details</h3>
-        <button onClick={onBack} style={{fontSize:'13px',color:'#6b7280',background:'none',border:'none',cursor:'pointer'}}>{"\u2190"} Back</button>
+        <button onClick={onBack} style={{fontSize:'13px',color:'#6b7280',background:'none',border:'none',cursor:'pointer'}}>← Back</button>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px'}}>
         <div style={{gridColumn:'1 / -1'}}>
@@ -401,44 +294,11 @@ function ManualEntryForm({ onAnalyse, onBack }) {
   );
 }
 
-/* --- Settings Panel --- */
-function SettingsPanel({ apiKey, onSave, onClose }) {
-  const [key, setKey] = useState(apiKey || '');
-  const [visible, setVisible] = useState(false);
-
-  return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,padding:'16px'}}>
-      <div style={{background:'#fff',borderRadius:'16px',padding:'24px',maxWidth:'480px',width:'100%',boxShadow:'0 20px 60px rgba(0,0,0,0.15)'}}>
-        <h3 style={{fontSize:'16px',fontWeight:600,color:'#111827',marginBottom:'4px'}}>API Settings</h3>
-        <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'16px'}}>Enter your Claude API key. It stays in your browser only.</p>
-        <label style={{display:'block',fontSize:'13px',fontWeight:500,color:'#374151',marginBottom:'4px'}}>Claude API Key</label>
-        <div style={{display:'flex',gap:'8px',marginBottom:'16px'}}>
-          <input
-            type={visible ? 'text' : 'password'}
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-ant-..."
-            style={{flex:1,background:'#f9fafb',border:'1px solid #d1d5db',borderRadius:'8px',padding:'10px 12px',fontSize:'14px',color:'#111827',outline:'none',fontFamily:'monospace'}}
-          />
-          <button onClick={() => setVisible(!visible)} style={{background:'#f3f4f6',border:'1px solid #d1d5db',borderRadius:'8px',padding:'0 12px',fontSize:'12px',color:'#374151',cursor:'pointer'}}>
-            {visible ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <p style={{fontSize:'11px',color:'#9ca3af',marginBottom:'16px'}}>Get a key at console.anthropic.com. Each analysis costs roughly $0.01-$0.05.</p>
-        <div style={{display:'flex',gap:'8px',justifyContent:'flex-end'}}>
-          <button onClick={onClose} style={{background:'#fff',border:'1px solid #d1d5db',borderRadius:'8px',padding:'8px 16px',fontSize:'13px',color:'#374151',cursor:'pointer'}}>Cancel</button>
-          <button onClick={() => { onSave(key); onClose(); }} disabled={!key.startsWith('sk-')} style={{background: key.startsWith('sk-') ? '#111827' : '#d1d5db',color:'#fff',border:'none',borderRadius:'8px',padding:'8px 16px',fontSize:'13px',fontWeight:500,cursor: key.startsWith('sk-') ? 'pointer' : 'not-allowed'}}>Save</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* --- Error Display --- */
 function ErrorMessage({ message, onRetry, onBack }) {
   return (
     <div style={{background:'#fff',borderRadius:'12px',border:'1px solid #fecaca',padding:'24px',textAlign:'center'}}>
-      <p style={{fontSize:'20px',marginBottom:'8px'}}>{"\u26a0\ufe0f"}</p>
+      <p style={{fontSize:'20px',marginBottom:'8px'}}>⚠️</p>
       <p style={{fontSize:'15px',fontWeight:500,color:'#991b1b',marginBottom:'8px'}}>Analysis Failed</p>
       <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'20px',maxWidth:'400px',margin:'0 auto 20px'}}>{message}</p>
       <div style={{display:'flex',gap:'8px',justifyContent:'center'}}>
@@ -453,30 +313,24 @@ function ErrorMessage({ message, onRetry, onBack }) {
 function App() {
   const [view, setView] = useState('home');
   const [url, setUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState('');
   const [lastRequest, setLastRequest] = useState(null);
   const reportRef = useRef(null);
 
   const doAnalysis = useCallback(async (listingUrl, manualDetails) => {
-    if (!apiKey) {
-      setShowSettings(true);
-      return;
-    }
     setView('loading');
     setError('');
     setLastRequest({ listingUrl, manualDetails });
     try {
-      const result = await analyseProperty(apiKey, listingUrl, manualDetails);
+      const result = await analyseProperty(listingUrl, manualDetails);
       setReportData(result);
       setView('report');
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.');
       setView('error');
     }
-  }, [apiKey]);
+  }, []);
 
   const handleUrlSubmit = () => {
     if (!url.trim()) return;
@@ -509,29 +363,15 @@ function App() {
             </div>
             <span style={{fontSize:'16px',fontWeight:600,color:'#111827'}}>PropertyIQ</span>
           </button>
-          <div style={{display:'flex',gap:'12px',alignItems:'center'}}>
-            {view === 'report' && (
-              <button onClick={() => {setView('home');setUrl('');}} style={{fontSize:'13px',color:'#6b7280',background:'none',border:'none',cursor:'pointer'}}>New Analysis</button>
-            )}
-            <button onClick={() => setShowSettings(true)} style={{fontSize:'13px',color: apiKey ? '#059669' : '#dc2626',background:'none',border:'none',cursor:'pointer'}}>
-              {apiKey ? '\u25cf Connected' : '\u25cb Set API Key'}
-            </button>
-          </div>
+          {view === 'report' && (
+            <button onClick={() => {setView('home');setUrl('');}} style={{fontSize:'13px',color:'#6b7280',background:'none',border:'none',cursor:'pointer'}}>New Analysis</button>
+          )}
         </div>
       </header>
-
-      {showSettings && <SettingsPanel apiKey={apiKey} onSave={setApiKey} onClose={() => setShowSettings(false)} />}
 
       <main style={{maxWidth:'720px',margin:'0 auto',padding:'24px 16px'}}>
         {view === 'home' && (
           <div>
-            {!apiKey && (
-              <div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:'12px',padding:'16px',marginBottom:'24px',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
-                <p style={{fontSize:'13px',color:'#92400e'}}>Set your Claude API key to enable live property analysis.</p>
-                <button onClick={() => setShowSettings(true)} style={{background:'#92400e',color:'#fff',border:'none',borderRadius:'8px',padding:'8px 16px',fontSize:'13px',fontWeight:500,cursor:'pointer'}}>Set API Key</button>
-              </div>
-            )}
-
             <div style={{textAlign:'center',marginBottom:'40px'}}>
               <h1 style={{fontSize:'28px',fontWeight:700,color:'#111827',marginBottom:'12px'}}>Should you buy this property?</h1>
               <p style={{color:'#6b7280',fontSize:'15px',maxWidth:'420px',margin:'0 auto',lineHeight:'1.5'}}>
@@ -563,9 +403,9 @@ function App() {
 
             <div style={{marginTop:'48px',display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:'16px'}}>
               {[
-                { icon:'\ud83d\udd17', title:'Paste a listing', desc:'Drop in a URL from Domain, REA, or any major listings site.' },
-                { icon:'\ud83d\udd0d', title:'AI analyses it', desc:'Pricing, risks, area outlook, and negotiation leverage \u2014 all assessed.' },
-                { icon:'\ud83e\udde0', title:'Smarter decisions', desc:'Buyer psychology flags so you negotiate with your head, not your heart.' }
+                { icon:'🔗', title:'Paste a listing', desc:'Drop in a URL from Domain, REA, or any major listings site.' },
+                { icon:'🔍', title:'AI analyses it', desc:'Pricing, risks, area outlook, and negotiation leverage — all assessed.' },
+                { icon:'🧠', title:'Smarter decisions', desc:'Buyer psychology flags so you negotiate with your head, not your heart.' }
               ].map((item, i) => (
                 <div key={i} style={{background:'#fff',borderRadius:'12px',border:'1px solid #e5e7eb',padding:'16px',textAlign:'center'}}>
                   <span style={{fontSize:'24px',display:'block',marginBottom:'8px'}}>{item.icon}</span>
