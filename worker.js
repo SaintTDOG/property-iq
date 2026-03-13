@@ -1,6 +1,5 @@
-// PropertyIQ v3 — Cloudflare Worker
-// Phase 1: Proper structured data extraction via HTMLRewriter
-// Extracts ArgonautExchange (REA) and __NEXT_DATA__ (Domain) before touching Claude
+// PropertyIQ v4 — Cloudflare Worker
+// Improved extraction with REA API fallback, debug metadata, and smarter URL parsing
 
 const SYSTEM_PROMPT = `You are PropertyIQ, the most thorough property analyst in Australia. You combine the knowledge of a senior buyer's agent, a property valuer, a financial analyst, a town planner, and a behavioural psychologist. You have deep knowledge of every Australian suburb — demographics, infrastructure, school catchments, flood/bushfire overlays, development applications, transport corridors, and community sentiment.
 
@@ -135,9 +134,116 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+// ─── Parse URL to extract property info from the URL path ───
+
+function parseListingUrl(url) {
+  const info = { platform: null, suburb: null, state: null, propertyType: null, listingId: null };
+
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+
+    if (host.includes("realestate.com.au")) {
+      info.platform = "realestate.com.au";
+      // URL pattern: /property-{type}-{state}-{suburb}-{id}
+      const reaMatch = path.match(/\/property-([a-z]+)-([a-z]{2,3})-([a-z0-9-]+?)-(\d+)/);
+      if (reaMatch) {
+        info.propertyType = reaMatch[1].charAt(0).toUpperCase() + reaMatch[1].slice(1);
+        info.state = reaMatch[2].toUpperCase();
+        info.suburb = reaMatch[3].replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        info.listingId = reaMatch[4];
+      }
+    } else if (host.includes("domain.com.au")) {
+      info.platform = "domain.com.au";
+      // URL pattern: /{suburb}-{state}-{postcode}/{id}
+      const domainMatch = path.match(/\/([a-z-]+?)-([a-z]{2,3})-(\d{4})\/(\d+)/);
+      if (domainMatch) {
+        info.suburb = domainMatch[1].replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        info.state = domainMatch[2].toUpperCase();
+        info.postcode = domainMatch[3];
+        info.listingId = domainMatch[4];
+      }
+    }
+  } catch (e) {}
+
+  return info;
+}
+
+// ─── Try REA's GraphQL/API endpoints ───
+
+async function tryReaApi(listingId) {
+  if (!listingId) return null;
+
+  // Try the residential listing API endpoint
+  const endpoints = [
+    `https://www.realestate.com.au/graph-ql`,
+    `https://lexa.realestate.com.au/graphql`,
+  ];
+
+  // Try the simpler JSON endpoint first
+  try {
+    const resp = await fetch(`https://www.realestate.com.au/property/${listingId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+      },
+    });
+    if (resp.ok) {
+      const text = await resp.text();
+      try {
+        const data = JSON.parse(text);
+        if (data && typeof data === "object") {
+          return { source: "rea_json_endpoint", data };
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  // Try GraphQL endpoint
+  for (const endpoint of endpoints) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+        },
+        body: JSON.stringify({
+          query: `query GetListing($listingId: String!) {
+            listing(id: $listingId) {
+              id address { displayAddress suburb state postcode streetAddress }
+              price { displayPrice }
+              propertyType bedrooms bathrooms carSpaces
+              landSize { displayValue value unit }
+              description
+              listedDate
+              agency { name }
+              agents { name }
+              features { general }
+            }
+          }`,
+          variables: { listingId },
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.data?.listing) {
+          return { source: "rea_graphql", data: data.data.listing };
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
 // ─── HTMLRewriter-based extraction for REA and Domain ───
 
 async function extractStructuredData(url) {
+  const debug = { fetchStatus: null, contentLength: 0, hasJsonLd: false, hasNextData: false, hasArgonaut: false, scriptCount: 0, ogTagCount: 0 };
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -145,11 +251,18 @@ async function extractStructuredData(url) {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-AU,en;q=0.9",
         "Cache-Control": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
       },
       redirect: "follow",
     });
 
-    if (!response.ok) return { ok: false, error: "HTTP " + response.status };
+    debug.fetchStatus = response.status;
+
+    if (!response.ok) return { ok: false, error: "HTTP " + response.status, debug };
 
     // Collect data from HTMLRewriter
     const collected = {
@@ -170,7 +283,6 @@ async function extractStructuredData(url) {
     let isScriptCapture = false;
 
     const rewriter = new HTMLRewriter()
-      // JSON-LD structured data (both REA and Domain use this)
       .on('script[type="application/ld+json"]', {
         element() { isJsonLd = true; jsonLdBuffer = ""; },
         text(text) {
@@ -184,7 +296,6 @@ async function extractStructuredData(url) {
           }
         }
       })
-      // Domain.com.au __NEXT_DATA__
       .on('script#__NEXT_DATA__', {
         element() { isNextData = true; nextDataBuffer = ""; },
         text(text) {
@@ -197,7 +308,6 @@ async function extractStructuredData(url) {
           }
         }
       })
-      // Open Graph meta tags
       .on('meta[property^="og:"]', {
         element(el) {
           const prop = el.getAttribute("property");
@@ -205,7 +315,6 @@ async function extractStructuredData(url) {
           if (prop && content) collected.ogTags[prop] = content;
         }
       })
-      // Other useful meta tags
       .on('meta[name]', {
         element(el) {
           const name = (el.getAttribute("name") || "").toLowerCase();
@@ -216,7 +325,6 @@ async function extractStructuredData(url) {
           }
         }
       })
-      // Title
       .on('title', {
         element() { isTitle = true; titleBuffer = ""; },
         text(text) {
@@ -229,14 +337,12 @@ async function extractStructuredData(url) {
           }
         }
       })
-      // Capture all script tags to find ArgonautExchange
       .on('script:not([type]):not([src]), script[type="text/javascript"]:not([src])', {
         element() { isScriptCapture = true; scriptBuffer = ""; },
         text(text) {
           if (isScriptCapture) {
             scriptBuffer += text.text;
             if (text.lastInTextNode) {
-              // Only keep scripts that look like they contain property data
               if (scriptBuffer.includes("ArgonautExchange") ||
                   scriptBuffer.includes("listingData") ||
                   scriptBuffer.includes("propertyData") ||
@@ -250,12 +356,19 @@ async function extractStructuredData(url) {
         }
       });
 
-    // Run HTMLRewriter
-    await rewriter.transform(response).arrayBuffer();
+    const transformed = rewriter.transform(response);
+    const buffer = await transformed.arrayBuffer();
+    debug.contentLength = buffer.byteLength;
+    debug.hasJsonLd = collected.jsonLd.length > 0;
+    debug.hasNextData = !!collected.nextData;
+    debug.hasArgonaut = collected.scriptContents.some(s => s.includes("ArgonautExchange"));
+    debug.scriptCount = collected.scriptContents.length;
+    debug.ogTagCount = Object.keys(collected.ogTags).length;
 
-    return { ok: true, ...collected };
+    return { ok: true, ...collected, debug };
   } catch (e) {
-    return { ok: false, error: e.message };
+    debug.error = e.message;
+    return { ok: false, error: e.message, debug };
   }
 }
 
@@ -263,22 +376,18 @@ async function extractStructuredData(url) {
 
 function parseArgonautExchange(scriptContents) {
   for (const script of scriptContents) {
-    // Look for the ArgonautExchange assignment
     const match = script.match(/window\.ArgonautExchange\s*=\s*(\{[\s\S]*?\});?\s*(?:window\.|<\/script|$)/);
     if (match) {
       try {
         const data = JSON.parse(match[1]);
         return extractREAListingFromArgonaut(data);
       } catch (e) {
-        // Try a more lenient extraction - find the JSON blob
         try {
           const start = script.indexOf('window.ArgonautExchange');
           if (start === -1) continue;
           const eqSign = script.indexOf('=', start);
           const braceStart = script.indexOf('{', eqSign);
           if (braceStart === -1) continue;
-
-          // Find matching closing brace
           let depth = 0;
           let end = braceStart;
           for (let i = braceStart; i < script.length; i++) {
@@ -297,21 +406,14 @@ function parseArgonautExchange(scriptContents) {
 }
 
 function extractREAListingFromArgonaut(data) {
-  // ArgonautExchange has a complex ID-keyed structure
-  // We need to traverse it to find listing details
   const result = { source: "rea_argonaut" };
-
   try {
-    // Stringify and search for key patterns
     const str = JSON.stringify(data);
-
-    // Extract price
     const priceMatch = str.match(/"price":\s*"([^"]+)"/);
     const displayPriceMatch = str.match(/"displayPrice":\s*"([^"]+)"/);
     const priceDisplayMatch = str.match(/"priceDisplay":\s*"([^"]+)"/);
     result.price = displayPriceMatch?.[1] || priceDisplayMatch?.[1] || priceMatch?.[1] || null;
 
-    // Extract address parts
     const streetMatch = str.match(/"streetAddress":\s*"([^"]+)"/);
     const suburbMatch = str.match(/"suburb":\s*"([^"]+)"/);
     const stateMatch = str.match(/"state":\s*"([^"]+)"/);
@@ -322,7 +424,6 @@ function extractREAListingFromArgonaut(data) {
     result.state = stateMatch?.[1] || null;
     result.postcode = postcodeMatch?.[1] || null;
 
-    // Extract features
     const bedsMatch = str.match(/"bedrooms?":\s*(\d+)/i);
     const bathsMatch = str.match(/"bathrooms?":\s*(\d+)/i);
     const parkingMatch = str.match(/"parking(?:Spaces)?":\s*(\d+)/i) || str.match(/"carSpaces?":\s*(\d+)/i);
@@ -330,15 +431,12 @@ function extractREAListingFromArgonaut(data) {
     result.baths = bathsMatch ? parseInt(bathsMatch[1]) : null;
     result.parking = parkingMatch ? parseInt(parkingMatch[1]) : null;
 
-    // Extract land size
     const landMatch = str.match(/"landSize":\s*(\d+)/i) || str.match(/"landArea(?:Sqm)?":\s*(\d+(?:\.\d+)?)/i);
     result.land = landMatch ? landMatch[1] + " sqm" : null;
 
-    // Extract property type
     const typeMatch = str.match(/"propertyType":\s*"([^"]+)"/);
     result.type = typeMatch?.[1] || null;
 
-    // Extract description
     const descMatch = str.match(/"description":\s*"((?:[^"\\]|\\.)*)"/);
     if (descMatch) {
       let desc = descMatch[1].replace(/\\n/g, " ").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
@@ -346,18 +444,15 @@ function extractREAListingFromArgonaut(data) {
       result.description = desc;
     }
 
-    // Extract agent
     const agentNameMatch = str.match(/"agentName":\s*"([^"]+)"/) || str.match(/"agent(?:Display)?Name":\s*"([^"]+)"/);
     const agencyMatch = str.match(/"agencyName":\s*"([^"]+)"/) || str.match(/"brandName":\s*"([^"]+)"/);
     result.agent = [agentNameMatch?.[1], agencyMatch?.[1]].filter(Boolean).join(" — ") || null;
 
-    // Extract coordinates
     const latMatch = str.match(/"latitude":\s*(-?\d+\.\d+)/);
     const lngMatch = str.match(/"longitude":\s*(-?\d+\.\d+)/);
     result.lat = latMatch ? parseFloat(latMatch[1]) : null;
     result.lng = lngMatch ? parseFloat(lngMatch[1]) : null;
 
-    // Extract features list
     const featuresMatches = str.matchAll(/"features?":\s*\[([^\]]*)\]/gi);
     const features = [];
     for (const fm of featuresMatches) {
@@ -366,14 +461,12 @@ function extractREAListingFromArgonaut(data) {
     }
     if (features.length > 0) result.features = [...new Set(features)];
 
-    // Days on market
     const domMatch = str.match(/"daysOnMarket":\s*(\d+)/i) || str.match(/"listedDays?":\s*(\d+)/i);
     result.daysOnMarket = domMatch ? parseInt(domMatch[1]) : null;
 
   } catch (e) {
     result.parseError = e.message;
   }
-
   return result;
 }
 
@@ -383,10 +476,8 @@ function parseNextData(nextDataStr) {
   try {
     const data = JSON.parse(nextDataStr);
     const result = { source: "domain_nextdata" };
-
     const str = JSON.stringify(data);
 
-    // Extract from the stringified blob using same pattern matching
     const displayPriceMatch = str.match(/"price":\s*"([^"]+)"/) || str.match(/"displayPrice":\s*"([^"]+)"/);
     result.price = displayPriceMatch?.[1] || null;
 
@@ -434,21 +525,16 @@ function parseNextData(nextDataStr) {
   }
 }
 
-// ─── Parse JSON-LD (both platforms use this) ───
+// ─── Parse JSON-LD ───
 
 function parseJsonLd(jsonLdArray) {
   const result = { source: "json_ld" };
-
   for (const item of jsonLdArray) {
-    // Look for RealEstateListing, Product, or Residence types
     const type = item["@type"] || "";
     const str = JSON.stringify(item);
-
     if (type.includes("Residence") || type.includes("RealEstateListing") ||
         type.includes("Product") || type.includes("SingleFamilyResidence") ||
         str.includes("bedrooms") || str.includes("numberOfRooms")) {
-
-      // Address
       if (item.address) {
         const addr = item.address;
         result.address = addr.streetAddress ? [addr.streetAddress, addr.addressLocality, addr.addressRegion, addr.postalCode].filter(Boolean).join(", ") : null;
@@ -456,49 +542,32 @@ function parseJsonLd(jsonLdArray) {
         result.state = addr.addressRegion || null;
         result.postcode = addr.postalCode || null;
       }
-
-      // Price
       if (item.offers?.price) result.price = "$" + Number(item.offers.price).toLocaleString();
-      if (item.offers?.priceCurrency && item.offers?.price) result.priceCurrency = item.offers.priceCurrency;
-
-      // Rooms
       if (item.numberOfBedrooms) result.beds = parseInt(item.numberOfBedrooms);
       if (item.numberOfBathroomsTotal) result.baths = parseInt(item.numberOfBathroomsTotal);
-      if (item.numberOfRooms) result.rooms = parseInt(item.numberOfRooms);
-
-      // Geo
       if (item.geo) {
         result.lat = parseFloat(item.geo.latitude);
         result.lng = parseFloat(item.geo.longitude);
       }
-
-      // Description
       if (item.description) {
         result.description = item.description.length > 500 ? item.description.substring(0, 500) + "..." : item.description;
       }
-
-      // Name/title
       if (item.name) result.title = item.name;
     }
   }
-
   return Object.keys(result).length > 1 ? result : null;
 }
 
-// ─── Build the best listing data from all sources ───
+// ─── Merge listing data from all sources ───
 
-function mergeListingData(argonaut, nextData, jsonLd, ogTags, title) {
-  // Priority: argonaut > nextData > jsonLd > ogTags
-  const sources = [argonaut, nextData, jsonLd].filter(Boolean);
-
-  if (sources.length === 0) return null;
-
+function mergeListingData(sources, urlInfo) {
+  const validSources = sources.filter(Boolean);
   const merged = {};
   const fields = ["address", "suburb", "state", "postcode", "price", "type", "beds", "baths",
                   "parking", "land", "description", "agent", "lat", "lng", "daysOnMarket", "features"];
 
   for (const field of fields) {
-    for (const source of sources) {
+    for (const source of validSources) {
       if (source[field] != null && source[field] !== "") {
         merged[field] = source[field];
         break;
@@ -506,20 +575,16 @@ function mergeListingData(argonaut, nextData, jsonLd, ogTags, title) {
     }
   }
 
-  // Fill from OG tags if still missing
-  if (!merged.address && ogTags["og:title"]) merged.address = ogTags["og:title"];
-  if (!merged.description && ogTags["og:description"]) merged.description = ogTags["og:description"];
-  if (!merged.price && ogTags["meta:price"]) merged.price = ogTags["meta:price"];
+  // Fill from URL parsing if still missing
+  if (!merged.suburb && urlInfo.suburb) merged.suburb = urlInfo.suburb;
+  if (!merged.state && urlInfo.state) merged.state = urlInfo.state;
+  if (!merged.type && urlInfo.propertyType) merged.type = urlInfo.propertyType;
 
-  // Fill from page title if still missing address
-  if (!merged.address && title) merged.address = title.split("|")[0].trim();
-
-  merged.dataSources = sources.map(s => s.source).join(", ");
-
+  merged.dataSources = validSources.map(s => s.source).join(", ");
   return merged;
 }
 
-// ─── Fallback: clean HTML text for Claude ───
+// ─── Fallback: clean HTML text ───
 
 function cleanHtmlForClaude(html) {
   let text = html
@@ -558,68 +623,146 @@ export default {
       const { listingUrl, manualDetails } = body;
 
       let userMessage;
+      let extractionMeta = { method: "unknown", sources: [], debug: {} };
 
       if (listingUrl) {
-        // ─── STEP 1: Fetch and extract structured data ───
+        const urlInfo = parseListingUrl(listingUrl);
+        extractionMeta.urlInfo = urlInfo;
+
+        // ─── STEP 1: Try HTMLRewriter extraction ───
         const extracted = await extractStructuredData(listingUrl);
+        extractionMeta.debug.htmlRewriter = extracted.debug || {};
+
+        let listing = null;
 
         if (extracted.ok) {
-          // Try to parse structured sources
           const argonaut = parseArgonautExchange(extracted.scriptContents || []);
           const nextData = extracted.nextData ? parseNextData(extracted.nextData) : null;
           const jsonLd = extracted.jsonLd.length > 0 ? parseJsonLd(extracted.jsonLd) : null;
 
-          // Merge all sources into best-available listing data
-          const listing = mergeListingData(argonaut, nextData, jsonLd, extracted.ogTags, extracted.title);
+          extractionMeta.debug.foundArgonaut = !!argonaut;
+          extractionMeta.debug.foundNextData = !!nextData;
+          extractionMeta.debug.foundJsonLd = !!jsonLd;
 
-          if (listing && (listing.address || listing.suburb)) {
-            // ─── SUCCESS: We have structured listing data ───
-            userMessage = "Analyse this Australian property listing. I've extracted the structured data for you.\n\n";
-            userMessage += "=== EXTRACTED LISTING DATA ===\n";
-            userMessage += JSON.stringify(listing, null, 2) + "\n\n";
-            userMessage += "URL: " + listingUrl + "\n";
-            userMessage += "Data sources: " + (listing.dataSources || "structured extraction") + "\n\n";
-            userMessage += "Use this extracted data as the foundation. Fill in the listing fields from this data. Combine with your deep knowledge of " + (listing.suburb || "this suburb") + " to deliver the complete analysis with all sections.";
+          // Build OG-tags-based source
+          let ogSource = null;
+          if (Object.keys(extracted.ogTags).length > 0) {
+            ogSource = { source: "og_meta" };
+            if (extracted.ogTags["og:title"]) ogSource.address = extracted.ogTags["og:title"].split("|")[0].trim();
+            if (extracted.ogTags["og:description"]) ogSource.description = extracted.ogTags["og:description"];
+            if (extracted.ogTags["meta:description"]) ogSource.description = ogSource.description || extracted.ogTags["meta:description"];
+          }
+
+          // Merge all sources (priority order)
+          const allSources = [argonaut, nextData, jsonLd, ogSource].filter(Boolean);
+          listing = mergeListingData(allSources, urlInfo);
+
+          if (listing && (listing.address || listing.suburb || listing.price)) {
+            extractionMeta.method = "structured_extraction";
+            extractionMeta.sources = allSources.map(s => s.source);
           } else {
-            // ─── PARTIAL: HTMLRewriter worked but no structured data found ───
-            // Fall back to sending cleaned HTML text
-            // Re-fetch for raw text since HTMLRewriter consumed the response
+            listing = null;
+          }
+        }
+
+        // ─── STEP 2: If no structured data, try REA API ───
+        if (!listing && urlInfo.platform === "realestate.com.au" && urlInfo.listingId) {
+          const apiResult = await tryReaApi(urlInfo.listingId);
+          extractionMeta.debug.triedReaApi = true;
+          extractionMeta.debug.reaApiResult = !!apiResult;
+
+          if (apiResult) {
+            // Try to parse the API response
+            const str = JSON.stringify(apiResult.data);
+            const apiParsed = { source: apiResult.source };
+
+            const priceMatch = str.match(/"displayPrice":\s*"([^"]+)"/) || str.match(/"price":\s*"([^"]+)"/);
+            if (priceMatch) apiParsed.price = priceMatch[1];
+
+            const addrMatch = str.match(/"displayAddress":\s*"([^"]+)"/);
+            if (addrMatch) apiParsed.address = addrMatch[1];
+
+            const suburbMatch = str.match(/"suburb":\s*"([^"]+)"/);
+            if (suburbMatch) apiParsed.suburb = suburbMatch[1];
+
+            const bedsMatch = str.match(/"bedrooms?":\s*(\d+)/i);
+            if (bedsMatch) apiParsed.beds = parseInt(bedsMatch[1]);
+
+            const bathsMatch = str.match(/"bathrooms?":\s*(\d+)/i);
+            if (bathsMatch) apiParsed.baths = parseInt(bathsMatch[1]);
+
+            listing = mergeListingData([apiParsed], urlInfo);
+            if (listing && (listing.address || listing.suburb)) {
+              extractionMeta.method = "rea_api";
+              extractionMeta.sources = [apiResult.source];
+            } else {
+              listing = null;
+            }
+          }
+        }
+
+        // ─── Build the Claude prompt based on what we got ───
+
+        if (listing && Object.keys(listing).length > 2) {
+          // Good structured data
+          userMessage = "Analyse this Australian property listing. I've extracted the structured data for you.\n\n";
+          userMessage += "=== EXTRACTED LISTING DATA ===\n";
+          userMessage += JSON.stringify(listing, null, 2) + "\n\n";
+          userMessage += "URL: " + listingUrl + "\n";
+          userMessage += "Data sources: " + (listing.dataSources || "extraction") + "\n\n";
+          userMessage += "Use this extracted data as the foundation. Fill in the listing fields from this data. Combine with your deep knowledge of " + (listing.suburb || urlInfo.suburb || "this suburb") + " to deliver the complete analysis with all sections.";
+        } else if (extracted?.ok) {
+          // Page fetched but no structured data — send cleaned HTML + OG tags
+          extractionMeta.method = "cleaned_html";
+
+          // Re-fetch for raw HTML (HTMLRewriter consumed the stream)
+          let cleanText = "";
+          try {
             const rawResponse = await fetch(listingUrl, {
               headers: {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-AU,en;q=0.9",
+                "Accept": "text/html",
               },
               redirect: "follow",
             });
             const rawHtml = await rawResponse.text();
-            const cleanText = cleanHtmlForClaude(rawHtml);
-
-            userMessage = "Analyse this Australian property listing. I couldn't extract structured data, so here's the page content.\n\n";
-            userMessage += "URL: " + listingUrl + "\n";
-            if (extracted.title) userMessage += "PAGE TITLE: " + extracted.title + "\n";
-            if (Object.keys(extracted.ogTags).length > 0) {
-              userMessage += "\n=== META TAGS ===\n";
-              for (const [k, v] of Object.entries(extracted.ogTags)) {
-                userMessage += k + ": " + v + "\n";
-              }
-            }
-            if (extracted.jsonLd.length > 0) {
-              let jsonLdStr = JSON.stringify(extracted.jsonLd, null, 2);
-              if (jsonLdStr.length > 3000) jsonLdStr = jsonLdStr.substring(0, 3000) + "... [truncated]";
-              userMessage += "\n=== JSON-LD ===\n" + jsonLdStr + "\n";
-            }
-            userMessage += "\n=== PAGE CONTENT ===\n" + cleanText + "\n\n";
-            userMessage += "Extract all property details from the above and deliver the complete analysis.";
+            cleanText = cleanHtmlForClaude(rawHtml);
+          } catch (e) {
+            cleanText = "(Could not re-fetch page content)";
           }
+
+          userMessage = "Analyse this Australian property listing.\n\n";
+          userMessage += "URL: " + listingUrl + "\n";
+          if (urlInfo.suburb) userMessage += "FROM URL: " + urlInfo.propertyType + " in " + urlInfo.suburb + ", " + urlInfo.state + "\n";
+          if (extracted.title) userMessage += "PAGE TITLE: " + extracted.title + "\n";
+          if (Object.keys(extracted.ogTags).length > 0) {
+            userMessage += "\n=== META TAGS ===\n";
+            for (const [k, v] of Object.entries(extracted.ogTags)) {
+              userMessage += k + ": " + v + "\n";
+            }
+          }
+          if (extracted.jsonLd.length > 0) {
+            let jsonLdStr = JSON.stringify(extracted.jsonLd, null, 2);
+            if (jsonLdStr.length > 3000) jsonLdStr = jsonLdStr.substring(0, 3000) + "... [truncated]";
+            userMessage += "\n=== JSON-LD ===\n" + jsonLdStr + "\n";
+          }
+          userMessage += "\n=== PAGE CONTENT ===\n" + cleanText + "\n\n";
+          userMessage += "Extract all property details from the above and deliver the complete analysis.";
         } else {
-          // ─── FAILED: Couldn't fetch the page at all ───
+          // Couldn't fetch at all — URL inference only
+          extractionMeta.method = "url_inference";
+
           userMessage = "Analyse this Australian property listing: " + listingUrl + "\n\n";
-          userMessage += "I couldn't fetch the page (error: " + (extracted.error || "unknown") + "). ";
-          userMessage += "Extract what you can from the URL (suburb, property type, platform) and use your comprehensive knowledge of that area. ";
-          userMessage += "Be upfront that you're working from URL inference. Still deliver the full analysis.";
+          if (urlInfo.suburb) {
+            userMessage += "From the URL I can tell this is a " + urlInfo.propertyType + " in " + urlInfo.suburb + ", " + urlInfo.state + ".\n";
+            userMessage += "Listing ID: " + urlInfo.listingId + " on " + urlInfo.platform + "\n\n";
+          }
+          userMessage += "I couldn't fetch the page (error: " + (extracted?.error || "unknown") + "). ";
+          userMessage += "Use your comprehensive knowledge of " + (urlInfo.suburb || "this area") + " to deliver the full analysis. ";
+          userMessage += "Be upfront about confidence levels given limited listing data. Still deliver ALL sections with your best analysis.";
         }
       } else if (manualDetails) {
+        extractionMeta.method = "manual_entry";
         userMessage = "Analyse this Australian property:\n\n";
         const fields = [
           ['address', 'Address'], ['suburb', 'Suburb'], ['state', 'State'],
@@ -637,7 +780,7 @@ export default {
         });
       }
 
-      // ─── STEP 2: Send to Claude for analysis ───
+      // ─── STEP 3: Send to Claude ───
       const apiKey = env.ANTHROPIC_API_KEY;
 
       const anthropicResponse = await fetch("https://api.anthropic.com/v1/messages", {
@@ -657,7 +800,7 @@ export default {
 
       if (!anthropicResponse.ok) {
         const err = await anthropicResponse.json().catch(() => ({}));
-        return new Response(JSON.stringify({ error: err.error?.message || "API request failed" }), {
+        return new Response(JSON.stringify({ error: err.error?.message || "API request failed", _meta: extractionMeta }), {
           status: anthropicResponse.status,
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
         });
@@ -672,6 +815,9 @@ export default {
       jsonStr = jsonStr.trim();
 
       const result = JSON.parse(jsonStr);
+
+      // Attach extraction metadata to the response
+      result._meta = extractionMeta;
 
       return new Response(JSON.stringify(result), {
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
