@@ -26,16 +26,23 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 const WORKER_URL = "https://property-iq.falling-truth-0423.workers.dev";
 
-async function analyseProperty(listingUrl, manualDetails) {
+async function analyseProperty(listingUrl, manualDetails, bookmarkletData) {
+  const payload = {};
+  if (listingUrl) payload.listingUrl = listingUrl;
+  if (manualDetails) payload.manualDetails = manualDetails;
+  if (bookmarkletData) payload.bookmarkletData = bookmarkletData;
   const response = await fetch(WORKER_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ listingUrl, manualDetails })
+    body: JSON.stringify(payload)
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Analysis failed");
   return data;
 }
+
+/* ─── Bookmarklet code (minified, injected into bookmark href) ─── */
+const BOOKMARKLET_CODE = `javascript:void(function(){try{var d={},u=location.href;d.url=u;if(u.includes('realestate.com.au')){if(window.ArgonautExchange){var s=JSON.stringify(window.ArgonautExchange);var p=function(r){return(s.match(new RegExp('"'+r+'":\\\\s*"([^"]+)"'))||[])[1]};var n=function(r){return(s.match(new RegExp('"'+r+'":\\\\s*(\\\\d+)'))||[])[1]};d.price=p('displayPrice')||p('priceDisplay')||p('price');d.address=p('displayAddress')||[p('streetAddress'),p('suburb'),p('state'),p('postcode')].filter(Boolean).join(', ');d.suburb=p('suburb');d.state=p('state');d.postcode=p('postcode');d.beds=n('bedrooms')?parseInt(n('bedrooms')):null;d.baths=n('bathrooms')?parseInt(n('bathrooms')):null;d.parking=n('parkingSpaces')||n('carSpaces')?parseInt(n('parkingSpaces')||n('carSpaces')):null;d.land=(n('landSize')||n('landAreaSqm'))?(n('landSize')||n('landAreaSqm'))+' sqm':null;d.type=p('propertyType');d.agent=[p('agentName'),p('agencyName')||p('brandName')].filter(Boolean).join(' - ');var dm=s.match(/"description":\\\\s*"((?:[^"\\\\\\\\]|\\\\\\\\.)*)"/);if(dm)d.description=dm[1].replace(/\\\\\\\\n/g,' ').substring(0,300);d.daysOnMarket=n('daysOnMarket')?parseInt(n('daysOnMarket')):null}else{d.address=document.querySelector('h1')?.textContent?.trim();d.price=document.querySelector('[data-testid=\\"listing-details__summary-title\\"]')?.textContent?.trim()}}else if(u.includes('domain.com.au')){var nd=document.getElementById('__NEXT_DATA__');if(nd){var j=JSON.stringify(JSON.parse(nd.textContent));var p2=function(r){return(j.match(new RegExp('"'+r+'":\\\\s*"([^"]+)"'))||[])[1]};var n2=function(r){return(j.match(new RegExp('"'+r+'":\\\\s*(\\\\d+)'))||[])[1]};d.price=p2('price')||p2('displayPrice');d.address=p2('displayAddress');d.suburb=p2('suburb');d.state=p2('state');d.beds=n2('bedrooms')?parseInt(n2('bedrooms')):null;d.baths=n2('bathrooms')?parseInt(n2('bathrooms')):null;d.parking=n2('carSpaces')?parseInt(n2('carSpaces')):null;d.type=p2('propertyType');var dm2=j.match(/"description":\\\\s*"((?:[^"\\\\\\\\]|\\\\\\\\.)*)"/);if(dm2)d.description=dm2[1].replace(/\\\\\\\\n/g,' ').substring(0,300)}}d.source='bookmarklet';var e=encodeURIComponent(JSON.stringify(d));window.open('https://sainttdog.github.io/property-iq/?bk='+e,'_blank')}catch(err){alert('PropertyIQ: Could not extract data. '+err.message)}})()`;
 
 /* ─── Verdict colour logic ─── */
 function verdictStyle(verdict) {
@@ -394,9 +401,14 @@ function Report({ data }) {
       {data._meta && (
         <div style={{background:'#fafaf9',borderRadius:8,padding:'12px 16px',marginBottom:24}} className="fade-up">
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-            <span style={{width:8,height:8,borderRadius:'50%',background: data._meta.method === 'structured_extraction' ? '#16a34a' : data._meta.method === 'cleaned_html' ? '#d97706' : data._meta.method === 'rea_api' ? '#16a34a' : '#dc2626',flexShrink:0}} />
+            <span style={{width:8,height:8,borderRadius:'50%',background:
+              ['bookmarklet','structured_extraction','rea_api','domain_api_enriched'].includes(data._meta.method) ? '#16a34a' :
+              ['domain_api','cleaned_html'].includes(data._meta.method) ? '#d97706' : '#dc2626',flexShrink:0}} />
             <span style={{fontSize:11,fontWeight:600,color:'#525252',textTransform:'uppercase',letterSpacing:'0.04em'}}>
-              {data._meta.method === 'structured_extraction' ? 'Full listing data extracted' :
+              {data._meta.method === 'bookmarklet' ? 'Full listing data via bookmarklet' :
+               data._meta.method === 'structured_extraction' ? 'Full listing data extracted' :
+               data._meta.method === 'domain_api_enriched' ? 'Full data — Domain API + page extraction' :
+               data._meta.method === 'domain_api' ? 'Partial data — Domain API match' :
                data._meta.method === 'rea_api' ? 'Data from REA API' :
                data._meta.method === 'cleaned_html' ? 'Partial data — page content analysed' :
                data._meta.method === 'url_inference' ? 'Limited data — URL inference only' :
@@ -405,6 +417,11 @@ function Report({ data }) {
           </div>
           {data._meta.sources && data._meta.sources.length > 0 && (
             <p style={{fontSize:11,color:'#a3a3a3'}}>Sources: {data._meta.sources.join(', ')}</p>
+          )}
+          {data._meta.method === 'url_inference' && (
+            <p style={{fontSize:11,color:'#8b5cf6',marginTop:4}}>
+              Tip: Use the <a href="#" onClick={(e) => { e.preventDefault(); window.scrollTo({top:0,behavior:'smooth'}); }} style={{color:'#8b5cf6',textDecoration:'underline'}}>PropertyIQ bookmarklet</a> for full listing data and higher accuracy.
+            </p>
           )}
         </div>
       )}
@@ -478,15 +495,33 @@ function App() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [last, setLast] = useState(null);
+  const [showBookmarklet, setShowBookmarklet] = useState(false);
   const ref = useRef(null);
 
-  const run = useCallback(async (listingUrl, manual) => {
-    setView('loading'); setError(''); setLast({ listingUrl, manual });
-    try { const r = await analyseProperty(listingUrl, manual); setData(r); setView('report'); }
+  const run = useCallback(async (listingUrl, manual, bkData) => {
+    setView('loading'); setError(''); setLast({ listingUrl, manual, bkData });
+    try { const r = await analyseProperty(listingUrl, manual, bkData); setData(r); setView('report'); }
     catch (e) { setError(e.message); setView('error'); }
   }, []);
 
-  const submit = () => { if (url.trim()) run(url.trim(), null); };
+  const submit = () => { if (url.trim()) run(url.trim(), null, null); };
+
+  // Handle bookmarklet data from URL params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const bk = params.get('bk');
+    if (bk) {
+      try {
+        const bkData = JSON.parse(decodeURIComponent(bk));
+        const bkUrl = bkData.url || null;
+        delete bkData.url;
+        delete bkData.source;
+        // Clean the URL
+        window.history.replaceState({}, '', window.location.pathname);
+        run(bkUrl, null, bkData);
+      } catch(e) { console.error('Bookmarklet parse error:', e); }
+    }
+  }, []);
 
   useEffect(() => {
     if (view === 'report' && ref.current) ref.current.scrollIntoView({ behavior: 'smooth' });
@@ -528,15 +563,57 @@ function App() {
               </div>
             </div>
 
-            <button onClick={() => setView('manual')} style={{fontSize:12,color:'#a3a3a3',background:'none',border:'none',cursor:'pointer'}}>
-              Not listed online? Enter details manually
-            </button>
+            <div style={{display:'flex',gap:16,marginTop:4}}>
+              <button onClick={() => setView('manual')} style={{fontSize:12,color:'#a3a3a3',background:'none',border:'none',cursor:'pointer'}}>
+                Enter details manually
+              </button>
+              <button onClick={() => setShowBookmarklet(!showBookmarklet)} style={{fontSize:12,color:'#8b5cf6',background:'none',border:'none',cursor:'pointer',fontWeight:500}}>
+                {showBookmarklet ? 'Hide setup' : 'Get better results'}
+              </button>
+            </div>
+
+            {showBookmarklet && (
+              <div style={{marginTop:24,background:'#fafaf9',borderRadius:12,padding:'20px 24px',border:'1px solid #f0f0f0'}} className="fade-up">
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+                  <span style={{width:8,height:8,borderRadius:'50%',background:'#16a34a',flexShrink:0}} />
+                  <p style={{fontSize:13,fontWeight:600,color:'#1a1a1a'}}>Unlock full listing data</p>
+                </div>
+                <p style={{fontSize:13,color:'#737373',lineHeight:1.6,marginBottom:16}}>
+                  Property sites block our server from reading listings directly. The PropertyIQ bookmarklet runs in your browser — where the listing is already loaded — and extracts the full details (price, beds, baths, land, description, agent) for a much more accurate analysis.
+                </p>
+                <p style={{fontSize:12,fontWeight:600,color:'#525252',marginBottom:8}}>Setup (one time, 10 seconds):</p>
+                <div style={{fontSize:13,color:'#404040',lineHeight:1.8,marginBottom:16}}>
+                  <p>1. Drag this button to your bookmarks bar:</p>
+                  <div style={{margin:'12px 0'}}>
+                    <a href={BOOKMARKLET_CODE}
+                      onClick={(e) => e.preventDefault()}
+                      onDragStart={(e) => { e.dataTransfer.setData('text/uri-list', BOOKMARKLET_CODE); e.dataTransfer.setData('text/plain', BOOKMARKLET_CODE); }}
+                      style={{display:'inline-block',background:'#1a1a1a',color:'#fff',fontSize:13,fontWeight:600,padding:'8px 20px',borderRadius:8,textDecoration:'none',cursor:'grab',userSelect:'none'}}>
+                      Analyse with PropertyIQ
+                    </a>
+                  </div>
+                  <p>2. Go to any listing on realestate.com.au or domain.com.au</p>
+                  <p>3. Click the bookmarklet in your bookmarks bar</p>
+                  <p>4. PropertyIQ opens with the full listing data pre-loaded</p>
+                </div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                  <div style={{flex:1,minWidth:140,background:'#fff',borderRadius:8,padding:'10px 14px',border:'1px solid #f0f0f0'}}>
+                    <p style={{fontSize:10,fontWeight:600,color:'#dc2626',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Without bookmarklet</p>
+                    <p style={{fontSize:12,color:'#737373'}}>Suburb-level analysis based on URL and AI knowledge</p>
+                  </div>
+                  <div style={{flex:1,minWidth:140,background:'#fff',borderRadius:8,padding:'10px 14px',border:'1px solid #16a34a'}}>
+                    <p style={{fontSize:10,fontWeight:600,color:'#16a34a',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>With bookmarklet</p>
+                    <p style={{fontSize:12,color:'#737373'}}>Exact price, beds, baths, land, agent, description — full precision</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {view === 'manual' && <ManualForm onAnalyse={(f) => run(null, f)} onBack={() => setView('home')} />}
         {view === 'loading' && <LoadingState />}
-        {view === 'error' && <ErrorMsg message={error} onRetry={() => last && run(last.listingUrl, last.manual)} onBack={() => {setView('home');setError('');}} />}
+        {view === 'error' && <ErrorMsg message={error} onRetry={() => last && run(last.listingUrl, last.manual, last.bkData)} onBack={() => {setView('home');setError('');}} />}
         {view === 'report' && data && <div ref={ref}><Report data={data} /></div>}
       </main>
     </div>
