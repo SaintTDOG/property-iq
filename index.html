@@ -402,7 +402,7 @@ function Report({ data }) {
         <div style={{background:'#fafaf9',borderRadius:8,padding:'12px 16px',marginBottom:24}} className="fade-up">
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{width:8,height:8,borderRadius:'50%',background:
-              ['bookmarklet','structured_extraction','rea_api','domain_api_enriched'].includes(data._meta.method) ? '#16a34a' :
+              ['bookmarklet','structured_extraction','rea_api','domain_api_enriched','manual_entry'].includes(data._meta.method) ? '#16a34a' :
               ['domain_api','cleaned_html'].includes(data._meta.method) ? '#d97706' : '#dc2626',flexShrink:0}} />
             <span style={{fontSize:11,fontWeight:600,color:'#525252',textTransform:'uppercase',letterSpacing:'0.04em'}}>
               {data._meta.method === 'bookmarklet' ? 'Full listing data via bookmarklet' :
@@ -412,7 +412,7 @@ function Report({ data }) {
                data._meta.method === 'rea_api' ? 'Data from REA API' :
                data._meta.method === 'cleaned_html' ? 'Partial data — page content analysed' :
                data._meta.method === 'url_inference' ? 'Limited data — URL inference only' :
-               data._meta.method === 'manual_entry' ? 'Manual entry' : 'Analysis complete'}
+               data._meta.method === 'manual_entry' ? 'User-provided listing details' : 'Analysis complete'}
             </span>
           </div>
           {data._meta.sources && data._meta.sources.length > 0 && (
@@ -438,36 +438,61 @@ function Report({ data }) {
   );
 }
 
-/* ─── Manual Entry Form ─── */
-function ManualForm({ onAnalyse, onBack }) {
+/* ─── Manual Entry Form (inline on home) ─── */
+function ManualForm({ onAnalyse }) {
   const [form, setForm] = useState({
-    address:'', suburb:'', state:'NSW', price:'', type:'House',
-    beds:'', baths:'', parking:'', land:'', daysOnMarket:'', agent:'', notes:''
+    address:'', suburb:'', state:'WA', price:'', type:'House',
+    beds:'', baths:'', parking:'', land:'', daysOnMarket:'', agent:'', notes:'', listingUrl:''
   });
   const u = (f) => (e) => setForm({...form, [f]: e.target.value});
   const is = {width:'100%',background:'#fafaf9',border:'1px solid #e5e5e5',borderRadius:8,padding:'10px 14px',fontSize:14,color:'#1a1a1a',fontFamily:'inherit'};
-  const ls = {display:'block',fontSize:12,fontWeight:500,color:'#737373',marginBottom:4};
+  const ls = {display:'block',fontSize:11,fontWeight:500,color:'#737373',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.04em'};
+  const canSubmit = form.address.trim() || form.suburb.trim();
   return (
     <div className="fade-up">
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:24}}>
-        <h2 style={{fontSize:16,fontWeight:600}}>Enter Property Details</h2>
-        <button onClick={onBack} style={{fontSize:13,color:'#a3a3a3',background:'none',border:'none',cursor:'pointer'}}>{"\u2190"} Back</button>
+      <p style={{fontSize:13,color:'#737373',lineHeight:1.6,marginBottom:20}}>
+        Copy the key details from the listing you're looking at. Address is the minimum — the more you add, the sharper the analysis.
+      </p>
+
+      {/* ─── Location ─── */}
+      <div style={{marginBottom:20}}>
+        <p style={{fontSize:12,fontWeight:600,color:'#1a1a1a',marginBottom:10}}>Location</p>
+        <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12}}>
+          <div><label style={ls}>Street Address <span style={{color:'#dc2626'}}>*</span></label><input style={is} placeholder="1 Parmelia Avenue" value={form.address} onChange={u('address')} /></div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div><label style={ls}>Suburb</label><input style={is} placeholder="Parmelia" value={form.suburb} onChange={u('suburb')} /></div>
+            <div><label style={ls}>State</label><select style={is} value={form.state} onChange={u('state')}>{['WA','NSW','VIC','QLD','SA','TAS','ACT','NT'].map(s=><option key={s}>{s}</option>)}</select></div>
+          </div>
+        </div>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-        <div style={{gridColumn:'1/-1'}}><label style={ls}>Address</label><input style={is} placeholder="123 Example Street" value={form.address} onChange={u('address')} /></div>
-        <div><label style={ls}>Suburb</label><input style={is} placeholder="Marrickville" value={form.suburb} onChange={u('suburb')} /></div>
-        <div><label style={ls}>State</label><select style={is} value={form.state} onChange={u('state')}>{['NSW','VIC','QLD','WA','SA','TAS','ACT','NT'].map(s=><option key={s}>{s}</option>)}</select></div>
-        <div><label style={ls}>Asking Price</label><input style={is} placeholder="$485,000" value={form.price} onChange={u('price')} /></div>
-        <div><label style={ls}>Type</label><select style={is} value={form.type} onChange={u('type')}>{['House','Apartment','Townhouse','Villa','Duplex','Land','Rural'].map(t=><option key={t}>{t}</option>)}</select></div>
-        <div><label style={ls}>Beds</label><input style={is} type="number" placeholder="3" value={form.beds} onChange={u('beds')} /></div>
-        <div><label style={ls}>Baths</label><input style={is} type="number" placeholder="1" value={form.baths} onChange={u('baths')} /></div>
-        <div><label style={ls}>Parking</label><input style={is} type="number" placeholder="1" value={form.parking} onChange={u('parking')} /></div>
-        <div><label style={ls}>Land Size</label><input style={is} placeholder="600 sqm" value={form.land} onChange={u('land')} /></div>
-        <div><label style={ls}>Days on Market</label><input style={is} type="number" placeholder="47" value={form.daysOnMarket} onChange={u('daysOnMarket')} /></div>
-        <div><label style={ls}>Agent</label><input style={is} placeholder="Agency name" value={form.agent} onChange={u('agent')} /></div>
-        <div style={{gridColumn:'1/-1'}}><label style={ls}>Notes</label><textarea style={{...is,resize:'none',height:80}} placeholder="Anything you noticed \u2014 cracks, eager agent, flooding, neighbours..." value={form.notes} onChange={u('notes')} /></div>
+
+      {/* ─── Property Details ─── */}
+      <div style={{marginBottom:20}}>
+        <p style={{fontSize:12,fontWeight:600,color:'#1a1a1a',marginBottom:10}}>Property Details</p>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+          <div><label style={ls}>Type</label><select style={is} value={form.type} onChange={u('type')}>{['House','Apartment','Townhouse','Villa','Duplex','Land','Rural','Unit'].map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={ls}>Asking Price</label><input style={is} placeholder="$550,000 or Contact Agent" value={form.price} onChange={u('price')} /></div>
+          <div><label style={ls}>Beds</label><input style={is} type="number" min="0" placeholder="4" value={form.beds} onChange={u('beds')} /></div>
+          <div><label style={ls}>Baths</label><input style={is} type="number" min="0" placeholder="2" value={form.baths} onChange={u('baths')} /></div>
+          <div><label style={ls}>Parking</label><input style={is} type="number" min="0" placeholder="2" value={form.parking} onChange={u('parking')} /></div>
+          <div><label style={ls}>Land Size</label><input style={is} placeholder="700 sqm" value={form.land} onChange={u('land')} /></div>
+        </div>
       </div>
-      <button onClick={() => onAnalyse(form)} style={{marginTop:20,width:'100%',background:'#1a1a1a',color:'#fff',fontSize:14,fontWeight:500,padding:'12px',borderRadius:8,border:'none',cursor:'pointer'}}>
+
+      {/* ─── Extra Context (collapsed by default) ─── */}
+      <details style={{marginBottom:20}}>
+        <summary style={{fontSize:12,fontWeight:500,color:'#a3a3a3',cursor:'pointer',marginBottom:12}}>Add more context (optional)</summary>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,paddingTop:4}}>
+          <div><label style={ls}>Days on Market</label><input style={is} type="number" placeholder="47" value={form.daysOnMarket} onChange={u('daysOnMarket')} /></div>
+          <div><label style={ls}>Agent / Agency</label><input style={is} placeholder="Ray White Kwinana" value={form.agent} onChange={u('agent')} /></div>
+          <div style={{gridColumn:'1/-1'}}><label style={ls}>Listing URL</label><input style={is} placeholder="https://www.domain.com.au/..." value={form.listingUrl} onChange={u('listingUrl')} /></div>
+          <div style={{gridColumn:'1/-1'}}><label style={ls}>Your Notes</label><textarea style={{...is,resize:'vertical',minHeight:60}} placeholder="Anything you noticed — cracks, eager agent, flood zone, noisy road, renovated kitchen..." value={form.notes} onChange={u('notes')} /></div>
+        </div>
+      </details>
+
+      <button onClick={() => { const {listingUrl, ...details} = form; onAnalyse(listingUrl || null, details); }}
+        disabled={!canSubmit}
+        style={{width:'100%',background: canSubmit ? '#1a1a1a' : '#d4d4d4',color:'#fff',fontSize:14,fontWeight:500,padding:'12px',borderRadius:8,border:'none',cursor: canSubmit ? 'pointer' : 'default',transition:'background 0.2s'}}>
         Analyse This Property
       </button>
     </div>
@@ -491,6 +516,7 @@ function ErrorMsg({ message, onRetry, onBack }) {
 /* ─── App ─── */
 function App() {
   const [view, setView] = useState('home');
+  const [inputMode, setInputMode] = useState('details');
   const [url, setUrl] = useState('');
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
@@ -544,74 +570,80 @@ function App() {
       <main style={{maxWidth:640,margin:'0 auto',padding:'32px 20px'}}>
         {view === 'home' && (
           <div className="fade-up">
-            <div style={{marginBottom:48}}>
+            <div style={{marginBottom:32}}>
               <h1 style={{fontSize:28,fontWeight:700,color:'#1a1a1a',letterSpacing:'-0.03em',lineHeight:1.2,marginBottom:8}}>Should you buy<br/>this property?</h1>
-              <p style={{color:'#737373',fontSize:15,lineHeight:1.6}}>Paste a listing URL. Get an AI-powered analysis that goes deeper than any agent will.</p>
+              <p style={{color:'#737373',fontSize:15,lineHeight:1.6}}>Enter the listing details. Get an AI analysis deeper than any agent will give you.</p>
             </div>
 
-            <div style={{marginBottom:12}}>
-              <div style={{display:'flex',gap:8}}>
-                <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
-                  placeholder="Paste a Domain or REA listing URL..."
-                  style={{flex:1,background:'#fafaf9',border:'1px solid #e5e5e5',borderRadius:8,padding:'12px 16px',fontSize:14,color:'#1a1a1a',fontFamily:'inherit'}}
-                  onKeyDown={(e) => e.key === 'Enter' && submit()}
-                />
-                <button onClick={submit} disabled={!url.trim()}
-                  style={{background: url.trim() ? '#1a1a1a' : '#e5e5e5',color:'#fff',fontSize:14,fontWeight:500,padding:'12px 28px',borderRadius:8,border:'none',cursor: url.trim() ? 'pointer' : 'default',transition:'background 0.2s'}}>
-                  Analyse
-                </button>
-              </div>
-            </div>
-
-            <div style={{display:'flex',gap:16,marginTop:4}}>
-              <button onClick={() => setView('manual')} style={{fontSize:12,color:'#a3a3a3',background:'none',border:'none',cursor:'pointer'}}>
-                Enter details manually
+            {/* ─── Tab Switcher ─── */}
+            <div style={{display:'flex',gap:0,marginBottom:24,borderBottom:'2px solid #f0f0f0'}}>
+              <button onClick={() => setInputMode('details')}
+                style={{flex:1,padding:'10px 0',fontSize:13,fontWeight:600,color: inputMode === 'details' ? '#1a1a1a' : '#a3a3a3',background:'none',border:'none',borderBottom: inputMode === 'details' ? '2px solid #1a1a1a' : '2px solid transparent',marginBottom:-2,cursor:'pointer',transition:'all 0.2s'}}>
+                Enter Details
               </button>
-              <button onClick={() => setShowBookmarklet(!showBookmarklet)} style={{fontSize:12,color:'#8b5cf6',background:'none',border:'none',cursor:'pointer',fontWeight:500}}>
-                {showBookmarklet ? 'Hide setup' : 'Get better results'}
+              <button onClick={() => setInputMode('url')}
+                style={{flex:1,padding:'10px 0',fontSize:13,fontWeight:600,color: inputMode === 'url' ? '#1a1a1a' : '#a3a3a3',background:'none',border:'none',borderBottom: inputMode === 'url' ? '2px solid #1a1a1a' : '2px solid transparent',marginBottom:-2,cursor:'pointer',transition:'all 0.2s'}}>
+                Paste URL
               </button>
             </div>
 
-            {showBookmarklet && (
-              <div style={{marginTop:24,background:'#fafaf9',borderRadius:12,padding:'20px 24px',border:'1px solid #f0f0f0'}} className="fade-up">
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-                  <span style={{width:8,height:8,borderRadius:'50%',background:'#16a34a',flexShrink:0}} />
-                  <p style={{fontSize:13,fontWeight:600,color:'#1a1a1a'}}>Unlock full listing data</p>
-                </div>
-                <p style={{fontSize:13,color:'#737373',lineHeight:1.6,marginBottom:16}}>
-                  Property sites block our server from reading listings directly. The PropertyIQ bookmarklet runs in your browser — where the listing is already loaded — and extracts the full details (price, beds, baths, land, description, agent) for a much more accurate analysis.
+            {/* ─── Tab: Enter Details ─── */}
+            {inputMode === 'details' && (
+              <ManualForm onAnalyse={(listingUrl, details) => run(listingUrl, details, null)} />
+            )}
+
+            {/* ─── Tab: Paste URL ─── */}
+            {inputMode === 'url' && (
+              <div className="fade-up">
+                <p style={{fontSize:13,color:'#737373',lineHeight:1.6,marginBottom:20}}>
+                  Paste a listing URL from realestate.com.au or domain.com.au. Works best with the bookmarklet — or enter details manually for the most reliable results.
                 </p>
-                <p style={{fontSize:12,fontWeight:600,color:'#525252',marginBottom:8}}>Setup (one time, 10 seconds):</p>
-                <div style={{fontSize:13,color:'#404040',lineHeight:1.8,marginBottom:16}}>
-                  <p>1. Drag this button to your bookmarks bar:</p>
-                  <div style={{margin:'12px 0'}}>
-                    <a href={BOOKMARKLET_CODE}
-                      onClick={(e) => e.preventDefault()}
-                      onDragStart={(e) => { e.dataTransfer.setData('text/uri-list', BOOKMARKLET_CODE); e.dataTransfer.setData('text/plain', BOOKMARKLET_CODE); }}
-                      style={{display:'inline-block',background:'#1a1a1a',color:'#fff',fontSize:13,fontWeight:600,padding:'8px 20px',borderRadius:8,textDecoration:'none',cursor:'grab',userSelect:'none'}}>
-                      Analyse with PropertyIQ
-                    </a>
-                  </div>
-                  <p>2. Go to any listing on realestate.com.au or domain.com.au</p>
-                  <p>3. Click the bookmarklet in your bookmarks bar</p>
-                  <p>4. PropertyIQ opens with the full listing data pre-loaded</p>
+                <div style={{display:'flex',gap:8,marginBottom:12}}>
+                  <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://www.domain.com.au/..."
+                    style={{flex:1,background:'#fafaf9',border:'1px solid #e5e5e5',borderRadius:8,padding:'12px 16px',fontSize:14,color:'#1a1a1a',fontFamily:'inherit'}}
+                    onKeyDown={(e) => e.key === 'Enter' && submit()}
+                  />
+                  <button onClick={submit} disabled={!url.trim()}
+                    style={{background: url.trim() ? '#1a1a1a' : '#d4d4d4',color:'#fff',fontSize:14,fontWeight:500,padding:'12px 28px',borderRadius:8,border:'none',cursor: url.trim() ? 'pointer' : 'default',transition:'background 0.2s'}}>
+                    Analyse
+                  </button>
                 </div>
-                <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
-                  <div style={{flex:1,minWidth:140,background:'#fff',borderRadius:8,padding:'10px 14px',border:'1px solid #f0f0f0'}}>
-                    <p style={{fontSize:10,fontWeight:600,color:'#dc2626',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>Without bookmarklet</p>
-                    <p style={{fontSize:12,color:'#737373'}}>Suburb-level analysis based on URL and AI knowledge</p>
+
+                <button onClick={() => setShowBookmarklet(!showBookmarklet)} style={{fontSize:12,color:'#8b5cf6',background:'none',border:'none',cursor:'pointer',fontWeight:500,marginTop:4}}>
+                  {showBookmarklet ? 'Hide bookmarklet setup' : 'Set up bookmarklet for better results'}
+                </button>
+
+                {showBookmarklet && (
+                  <div style={{marginTop:20,background:'#fafaf9',borderRadius:12,padding:'20px 24px',border:'1px solid #f0f0f0'}} className="fade-up">
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+                      <span style={{width:8,height:8,borderRadius:'50%',background:'#16a34a',flexShrink:0}} />
+                      <p style={{fontSize:13,fontWeight:600,color:'#1a1a1a'}}>Unlock full listing data</p>
+                    </div>
+                    <p style={{fontSize:13,color:'#737373',lineHeight:1.6,marginBottom:16}}>
+                      Property sites block our server from reading listings directly. The bookmarklet runs in your browser and extracts the full details for a much more accurate analysis.
+                    </p>
+                    <p style={{fontSize:12,fontWeight:600,color:'#525252',marginBottom:8}}>Setup (one time, 10 seconds):</p>
+                    <div style={{fontSize:13,color:'#404040',lineHeight:1.8,marginBottom:16}}>
+                      <p>1. Drag this button to your bookmarks bar:</p>
+                      <div style={{margin:'12px 0'}}>
+                        <a href={BOOKMARKLET_CODE}
+                          onClick={(e) => e.preventDefault()}
+                          onDragStart={(e) => { e.dataTransfer.setData('text/uri-list', BOOKMARKLET_CODE); e.dataTransfer.setData('text/plain', BOOKMARKLET_CODE); }}
+                          style={{display:'inline-block',background:'#1a1a1a',color:'#fff',fontSize:13,fontWeight:600,padding:'8px 20px',borderRadius:8,textDecoration:'none',cursor:'grab',userSelect:'none'}}>
+                          Analyse with PropertyIQ
+                        </a>
+                      </div>
+                      <p>2. Go to any listing on realestate.com.au or domain.com.au</p>
+                      <p>3. Click the bookmarklet in your bookmarks bar</p>
+                      <p>4. PropertyIQ opens with the full listing data pre-loaded</p>
+                    </div>
                   </div>
-                  <div style={{flex:1,minWidth:140,background:'#fff',borderRadius:8,padding:'10px 14px',border:'1px solid #16a34a'}}>
-                    <p style={{fontSize:10,fontWeight:600,color:'#16a34a',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}}>With bookmarklet</p>
-                    <p style={{fontSize:12,color:'#737373'}}>Exact price, beds, baths, land, agent, description — full precision</p>
-                  </div>
-                </div>
+                )}
               </div>
             )}
           </div>
         )}
-
-        {view === 'manual' && <ManualForm onAnalyse={(f) => run(null, f)} onBack={() => setView('home')} />}
         {view === 'loading' && <LoadingState />}
         {view === 'error' && <ErrorMsg message={error} onRetry={() => last && run(last.listingUrl, last.manual, last.bkData)} onBack={() => {setView('home');setError('');}} />}
         {view === 'report' && data && <div ref={ref}><Report data={data} /></div>}

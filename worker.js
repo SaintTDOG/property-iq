@@ -476,7 +476,19 @@ export default {
       }
 
       // ═══════════════════════════════════════════════════
-      // PATH 2: URL-based analysis
+      // PATH 2: Manual entry (with optional URL for context)
+      // ═══════════════════════════════════════════════════
+      else if (manualDetails && (manualDetails.address || manualDetails.suburb)) {
+        extractionMeta.method = "manual_entry";
+        userMessage = "Analyse this Australian property. The buyer has provided these details directly from the listing:\n\n";
+        const manualFields = [['address','Address'],['suburb','Suburb'],['state','State'],['price','Price'],['type','Type'],['beds','Beds'],['baths','Baths'],['parking','Parking'],['land','Land'],['daysOnMarket','Days on Market'],['agent','Agent'],['notes','Buyer Notes']];
+        for (const [k,l] of manualFields) { if (manualDetails[k]) userMessage += l + ": " + manualDetails[k] + "\n"; }
+        if (listingUrl) userMessage += "Listing URL: " + listingUrl + "\n";
+        userMessage += "\nThis is user-provided data — treat it as accurate. Use your deep knowledge of " + (manualDetails.suburb || manualDetails.address || "this area") + " to deliver the complete analysis with all sections. Be specific about this exact suburb.";
+      }
+
+      // ═══════════════════════════════════════════════════
+      // PATH 3: URL-based analysis
       // ═══════════════════════════════════════════════════
       else if (listingUrl) {
         const urlInfo = parseListingUrl(listingUrl);
@@ -570,16 +582,7 @@ export default {
         }
       }
 
-      // ═══════════════════════════════════════════════════
-      // PATH 3: Manual entry
-      // ═══════════════════════════════════════════════════
-      else if (manualDetails) {
-        extractionMeta.method = "manual_entry";
-        userMessage = "Analyse this Australian property:\n\n";
-        const fields = [['address','Address'],['suburb','Suburb'],['state','State'],['price','Price'],['type','Type'],['beds','Beds'],['baths','Baths'],['parking','Parking'],['land','Land'],['daysOnMarket','Days on Market'],['agent','Agent'],['notes','Buyer Notes']];
-        for (const [k,l] of fields) { if (manualDetails[k]) userMessage += l + ": " + manualDetails[k] + "\n"; }
-        userMessage += "\nDeliver the full analysis with all sections.";
-      } else {
+      else {
         return new Response(JSON.stringify({ error: "Provide a listing URL, bookmarklet data, or property details" }), {
           status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
         });
