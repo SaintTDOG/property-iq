@@ -438,13 +438,347 @@ function buildPrompt(listing, listingUrl, urlInfo, extractionMeta) {
   return null;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  DAILY NEW-LISTING → X POST PIPELINE
+// ═══════════════════════════════════════════════════════════════
+
+// "thebuyersgrail" persona — turns a full PropertyIQ analysis into a post.
+const X_POST_SYSTEM = `You are "thebuyersgrail", a sharp, credible Australian buyer's agent who posts a daily new-listing breakdown on X (Twitter). You cut through agent spin and give buyers genuine analytical value.
+
+You will be given a full property analysis as JSON. Write the post from that analysis ONLY — never invent facts, prices, or features that aren't in the data.
+
+Voice: confident, specific, useful. Plain Australian English. No hype, no clickbait, minimal emoji (0–1 max). Always name the suburb. Lead with the single most interesting insight (a value call, a risk, or a growth driver). Include at least one concrete number from the analysis (price, $/sqm, yield, or a score). Close the lead with a light hook, not a hard sell.
+
+Return ONLY valid JSON. No markdown, no backticks:
+{
+  "single": "A self-contained tweet, MAX 270 characters, including 2-3 relevant hashtags (e.g. #property #realestate + suburb or state).",
+  "thread": [
+    "Tweet 1 — the hook: suburb, property in one line, the headline verdict + one number.",
+    "Tweet 2 — value / price read.",
+    "Tweet 3 — growth or livability angle.",
+    "Tweet 4 — the biggest risk to check + a soft CTA.",
+    "Not financial advice. Always do your own due diligence. #property #realestate"
+  ]
+}
+Every element of "thread" must be MAX 270 characters. Keep the single tweet genuinely standalone.`;
+
+// Thin wrapper around the Claude messages API. Returns raw text.
+async function callClaude(env, system, userMessage, maxTokens = 8192) {
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: "user", content: userMessage }],
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error?.message || ("Claude API " + resp.status));
+  }
+  const data = await resp.json();
+  return data.content[0].text;
+}
+
+// Parse a JSON object out of a Claude response that may be fenced.
+function parseClaudeJson(text) {
+  let jsonStr = text;
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (m) jsonStr = m[1];
+  return JSON.parse(jsonStr.trim());
+}
+
+// "Bondi:NSW,Southbank:VIC" → [{suburb, state}, ...]
+function parseTargets(env) {
+  const raw = env.TARGET_SUBURBS || "";
+  const targets = raw.split(",").map(s => s.trim()).filter(Boolean).map(pair => {
+    const [suburb, state] = pair.split(":").map(x => (x || "").trim());
+    return suburb && state ? { suburb, state: state.toUpperCase() } : null;
+  }).filter(Boolean);
+  return targets.length ? targets : [{ suburb: "Bondi", state: "NSW" }];
+}
+
+// Newest Sale listings in a suburb, sorted most-recently-updated first.
+async function searchNewestListings(token, suburb, state) {
+  try {
+    const resp = await fetch("https://api.domain.com.au/v1/listings/residential/_search", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        listingType: "Sale",
+        locations: [{ suburb, state, includeSurroundingSuburbs: false }],
+        sort: { sortKey: "DateUpdated", direction: "Descending" },
+        pageSize: 20,
+      }),
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Walk every target suburb and return the first genuinely-new listing we
+// haven't already posted. Newness = listed within NEW_LISTING_WINDOW_HOURS.
+async function findFreshListing(env, token) {
+  const targets = parseTargets(env);
+  const windowMs = (parseInt(env.NEW_LISTING_WINDOW_HOURS || "48", 10) || 48) * 3600000;
+  const now = Date.now();
+
+  for (const { suburb, state } of targets) {
+    const results = await searchNewestListings(token, suburb, state);
+    for (const item of results) {
+      const listing = item.listing || item;
+      const id = listing.id || listing.listingId;
+      if (!id) continue;
+
+      const listedAt = listing.dateListed ? new Date(listing.dateListed).getTime() : null;
+      if (listedAt && (now - listedAt) > windowMs) continue; // too old to count as "new"
+
+      const alreadyPosted = env.POST_STORE ? await env.POST_STORE.get("posted:" + id) : null;
+      if (alreadyPosted) continue;
+
+      // Fetch full detail for the richest analysis.
+      const detail = await getDomainListingById(token, id);
+      const parsed = parseDomainApiListing(detail) || parseDomainApiListing(listing);
+      if (!parsed || (!parsed.address && !parsed.suburb)) continue;
+
+      const merged = mergeListingData([parsed], { suburb, state });
+      merged.id = id;
+      merged.seoUrl = detail?.seoUrl || listing.seoUrl || null;
+      merged.link = merged.seoUrl
+        ? (merged.seoUrl.startsWith("http") ? merged.seoUrl : "https://www.domain.com.au/" + merged.seoUrl.replace(/^\//, ""))
+        : ("https://www.domain.com.au/" + id);
+      return merged;
+    }
+  }
+  return null;
+}
+
+// Run a fresh listing through the full PropertyIQ analysis prompt.
+async function analyseListing(env, listing) {
+  let msg = "Analyse this Australian property listing. I've pulled the structured data from the Domain API for you.\n\n";
+  msg += "=== EXTRACTED LISTING DATA ===\n" + JSON.stringify(listing, null, 2) + "\n\n";
+  if (listing.link) msg += "URL: " + listing.link + "\n";
+  msg += "Use this as the foundation and combine it with your deep knowledge of " + (listing.suburb || "this suburb") + " to deliver the complete analysis with all sections.";
+  const text = await callClaude(env, SYSTEM_PROMPT, msg);
+  return parseClaudeJson(text);
+}
+
+// Turn the analysis into thebuyersgrail post variants (single + thread).
+async function composePost(env, analysis, listing) {
+  let msg = "Write today's new-listing post from this analysis.\n\n";
+  msg += "=== ANALYSIS ===\n" + JSON.stringify(analysis, null, 2) + "\n\n";
+  if (listing.link) msg += "Listing link (optional to include, counts toward length): " + listing.link + "\n";
+  const text = await callClaude(env, X_POST_SYSTEM, msg, 1500);
+  const post = parseClaudeJson(text);
+  // Hard safety clamp so we never exceed X's limit even if the model overshoots.
+  const clamp = t => (typeof t === "string" && t.length > 280) ? t.slice(0, 277).trimEnd() + "…" : t;
+  post.single = clamp(post.single);
+  post.thread = Array.isArray(post.thread) ? post.thread.map(clamp) : [];
+  return post;
+}
+
+// ─── X (Twitter) API v2 — OAuth 1.0a user-context posting ───
+
+function percentEncode(str) {
+  return encodeURIComponent(str).replace(/[!*'()]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+async function hmacSha1Base64(key, message) {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
+function genNonce() {
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildOAuthHeader(method, url, env) {
+  const oauth = {
+    oauth_consumer_key: env.X_API_KEY,
+    oauth_nonce: genNonce(),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
+    oauth_token: env.X_ACCESS_TOKEN,
+    oauth_version: "1.0",
+  };
+  const paramString = Object.keys(oauth).sort()
+    .map(k => percentEncode(k) + "=" + percentEncode(oauth[k])).join("&");
+  const baseString = [method.toUpperCase(), percentEncode(url), percentEncode(paramString)].join("&");
+  const signingKey = percentEncode(env.X_API_SECRET) + "&" + percentEncode(env.X_ACCESS_TOKEN_SECRET);
+  oauth.oauth_signature = await hmacSha1Base64(signingKey, baseString);
+  return "OAuth " + Object.keys(oauth).sort()
+    .map(k => percentEncode(k) + '="' + percentEncode(oauth[k]) + '"').join(", ");
+}
+
+async function postTweet(env, text, inReplyToId = null) {
+  const missing = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"].filter(k => !env[k]);
+  if (missing.length) throw new Error("Missing X credentials: " + missing.join(", "));
+  const url = "https://api.twitter.com/2/tweets";
+  const auth = await buildOAuthHeader("POST", url, env);
+  const body = { text };
+  if (inReplyToId) body.reply = { in_reply_to_tweet_id: inReplyToId };
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": auth, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error("X API " + resp.status + ": " + JSON.stringify(data));
+  return data.data; // { id, text }
+}
+
+// Publish a stored post per POST_FORMAT. Returns tweet ids.
+async function publishPost(env, post) {
+  const format = (env.POST_FORMAT || "single").toLowerCase();
+  if (format === "thread" && Array.isArray(post.thread) && post.thread.length) {
+    const ids = [];
+    let lastId = null;
+    for (const t of post.thread) {
+      if (!t) continue;
+      const res = await postTweet(env, t, lastId);
+      lastId = res.id;
+      ids.push(res.id);
+    }
+    return ids;
+  }
+  const res = await postTweet(env, post.single);
+  return [res.id];
+}
+
+// ─── Orchestration ───
+
+async function runDailyPost(env) {
+  const log = { ranAt: new Date().toISOString(), steps: [] };
+  try {
+    const token = await getDomainApiToken(env);
+    if (!token) { log.error = "No Domain API token (check DOMAIN_CLIENT_ID/SECRET)"; return log; }
+    log.steps.push("domain_token_ok");
+
+    const listing = await findFreshListing(env, token);
+    if (!listing) { log.result = "no_new_listing"; return log; }
+    log.listingId = listing.id;
+    log.address = listing.address;
+    log.steps.push("found_listing");
+
+    const analysis = await analyseListing(env, listing);
+    log.steps.push("analysed");
+
+    const post = await composePost(env, analysis, listing);
+    log.steps.push("composed");
+
+    const record = {
+      id: listing.id,
+      date: log.ranAt,
+      listing: { address: listing.address, suburb: listing.suburb, state: listing.state, price: listing.price, link: listing.link },
+      scores: analysis?.analysis?.scores || null,
+      post,
+    };
+
+    if ((env.POST_MODE || "draft").toLowerCase() === "auto") {
+      const tweetIds = await publishPost(env, post);
+      record.published = true;
+      record.tweetIds = tweetIds;
+      if (env.POST_STORE) await env.POST_STORE.put("posted:" + listing.id, "1", { expirationTtl: 60 * 60 * 24 * 90 });
+      log.result = "published";
+      log.tweetIds = tweetIds;
+    } else {
+      // Draft mode: store for review. Publishing is a manual, token-gated action.
+      record.published = false;
+      if (env.POST_STORE) {
+        await env.POST_STORE.put("draft:latest", JSON.stringify(record), { expirationTtl: 60 * 60 * 24 * 7 });
+      }
+      log.result = "drafted";
+    }
+    return log;
+  } catch (e) {
+    log.error = e.message;
+    return log;
+  }
+}
+
+// ─── Review UI (draft mode) ───
+
+function reviewPageHtml(record) {
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const l = record?.listing || {};
+  const p = record?.post || {};
+  const threadHtml = (p.thread || []).map((t, i) =>
+    `<div class="tw"><span class="n">${i + 1}</span><p>${esc(t)}</p><span class="c">${(t || "").length}/280</span></div>`).join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>thebuyersgrail — daily post review</title>
+<style>body{font-family:-apple-system,Inter,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#111}
+h1{font-size:20px}.meta{color:#666;font-size:13px;margin-bottom:20px}
+.tw{border:1px solid #e5e5e5;border-radius:12px;padding:14px;margin:10px 0;position:relative}
+.tw p{margin:0;white-space:pre-wrap}.n{position:absolute;top:-9px;left:12px;background:#111;color:#fff;font-size:11px;border-radius:9px;padding:1px 7px}
+.c{color:#999;font-size:11px}.card{background:#f7f7f5;border-radius:12px;padding:14px;margin:16px 0}
+button{background:#1d9bf0;color:#fff;border:0;border-radius:999px;padding:10px 22px;font-size:15px;font-weight:600;cursor:pointer}
+button.thread{background:#111}label{font-size:13px;color:#444}#out{margin-top:14px;font-size:14px}</style></head>
+<body>
+<h1>thebuyersgrail — daily post review</h1>
+<div class="meta">${record ? esc(l.address || "") + " · " + esc(l.price || "") + (l.link ? ' · <a href="' + esc(l.link) + '" target="_blank">listing</a>' : "") + " · drafted " + esc(record.date) : "No draft yet. The daily job hasn't produced one, or POST_MODE is 'auto'."}</div>
+${record ? `
+<div class="card"><strong>Single tweet</strong>
+<div class="tw"><p>${esc(p.single)}</p><span class="c">${(p.single || "").length}/280</span></div></div>
+<div class="card"><strong>Thread</strong>${threadHtml}</div>
+<p>
+  <button onclick="publish('single')">Publish single tweet</button>
+  <button class="thread" onclick="publish('thread')">Publish thread</button>
+</p>
+<div id="out"></div>
+<script>
+async function publish(format){
+  document.getElementById('out').textContent='Publishing…';
+  const t=new URLSearchParams(location.search).get('review');
+  const r=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'publish',token:t,format})});
+  const d=await r.json();
+  document.getElementById('out').textContent=r.ok?('Published: '+JSON.stringify(d.tweetIds)):('Error: '+(d.error||r.status));
+}
+</script>` : ""}
+</body></html>`;
+}
+
 // ─── Main Worker ───
 
 export default {
+  // Daily cron entry point.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runDailyPost(env).then(log => console.log("daily-post:", JSON.stringify(log))));
+  },
+
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
     }
+
+    const url = new URL(request.url);
+
+    // ─── Draft review page (GET /?review=<REVIEW_TOKEN>) ───
+    if (request.method === "GET") {
+      const token = url.searchParams.get("review");
+      if (token && env.REVIEW_TOKEN && token === env.REVIEW_TOKEN) {
+        const raw = env.POST_STORE ? await env.POST_STORE.get("draft:latest") : null;
+        const record = raw ? JSON.parse(raw) : null;
+        return new Response(reviewPageHtml(record), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+      return new Response(JSON.stringify({ error: "Method not allowed" }), {
+        status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      });
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -453,7 +787,40 @@ export default {
 
     try {
       const body = await request.json();
-      const { listingUrl, manualDetails, bookmarkletData } = body;
+      const { listingUrl, manualDetails, bookmarkletData, action } = body;
+
+      // ─── Token-gated actions (manual run / publish a draft) ───
+      if (action) {
+        if (!env.REVIEW_TOKEN || body.token !== env.REVIEW_TOKEN) {
+          return new Response(JSON.stringify({ error: "Unauthorised" }), {
+            status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        if (action === "run") {
+          // Trigger the daily pipeline on demand (useful for testing the cron logic).
+          const log = await runDailyPost(env);
+          return new Response(JSON.stringify(log), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        }
+        if (action === "publish") {
+          const raw = env.POST_STORE ? await env.POST_STORE.get("draft:latest") : null;
+          if (!raw) return new Response(JSON.stringify({ error: "No draft to publish" }), {
+            status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+          const record = JSON.parse(raw);
+          const pubEnv = body.format ? { ...env, POST_FORMAT: body.format } : env;
+          const tweetIds = await publishPost(pubEnv, record.post);
+          if (env.POST_STORE) {
+            await env.POST_STORE.put("posted:" + record.id, "1", { expirationTtl: 60 * 60 * 24 * 90 });
+            await env.POST_STORE.delete("draft:latest");
+          }
+          return new Response(JSON.stringify({ result: "published", tweetIds }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ error: "Unknown action" }), {
+          status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
 
       let userMessage;
       let extractionMeta = { method: "unknown", sources: [], debug: {} };

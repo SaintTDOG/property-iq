@@ -1,3 +1,40 @@
 name = "property-iq"
 main = "worker.js"
 compatibility_date = "2024-01-01"
+
+# ─── Daily new-listing X post ───
+# Runs once a day. 21:30 UTC ≈ 7:30am AEST / 8:30am AEDT — a sensible morning slot
+# for an Australian audience. Adjust the cron to suit.
+[triggers]
+crons = ["30 21 * * *"]
+
+[vars]
+# Comma-separated "Suburb:STATE" pairs the daily job scans for brand-new listings.
+# Override in the Cloudflare dashboard or here without touching code.
+TARGET_SUBURBS = "Bondi:NSW,Southbank:VIC,New Farm:QLD,Fremantle:WA,Norwood:SA"
+# "draft" = generate + store the post for review (publish is a manual, token-gated action).
+# "auto"  = publish straight to X every day, no human in the loop.
+POST_MODE = "draft"
+# "single" = one tweet. "thread" = lead tweet + follow-ups.
+POST_FORMAT = "single"
+# The persona / handle the post is written as.
+X_HANDLE = "thebuyersgrail"
+# Only consider listings first seen within this many hours as "new".
+NEW_LISTING_WINDOW_HOURS = "48"
+
+# ─── KV: dedup posted listings + hold pending drafts ───
+# Create once with:  wrangler kv:namespace create POST_STORE
+# then paste the returned id below.
+[[kv_namespaces]]
+binding = "POST_STORE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# ─── Secrets (set via `wrangler secret put <NAME>`, never commit) ───
+# ANTHROPIC_API_KEY        — Claude API key (already used by the analysis endpoint)
+# DOMAIN_CLIENT_ID         — Domain API OAuth client id
+# DOMAIN_CLIENT_SECRET     — Domain API OAuth client secret
+# X_API_KEY                — X/Twitter app consumer key
+# X_API_SECRET             — X/Twitter app consumer secret
+# X_ACCESS_TOKEN           — X/Twitter user access token (for @thebuyersgrail)
+# X_ACCESS_TOKEN_SECRET    — X/Twitter user access token secret
+# REVIEW_TOKEN             — shared secret guarding the draft review/publish endpoint
