@@ -81,11 +81,15 @@ The Worker signs requests with OAuth 1.0a (HMAC-SHA1) and posts via `POST /2/twe
 
 ### KV namespace
 
+The KV binding is **commented out by default** in `wrangler.toml` so the auto-deploy doesn't fail on a placeholder id. Enable it during setup:
+
 ```bash
 wrangler kv:namespace create POST_STORE
 ```
 
-Paste the returned `id` into the `[[kv_namespaces]]` block in `wrangler.toml`. KV holds `posted:<listingId>` dedup markers and the `draft:latest` pending post.
+Then uncomment the `[[kv_namespaces]]` block in `wrangler.toml` and paste the returned `id`. KV holds `posted:<listingId>` dedup markers and the `draft:latest` pending post.
+
+> Until KV is enabled the worker still deploys and runs, but **draft storage and dedup are disabled** — `POST_MODE=draft` can't hold a post for review, and `auto` mode won't dedup. Enable KV before relying on either.
 
 ---
 

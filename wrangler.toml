@@ -23,11 +23,15 @@ X_HANDLE = "thebuyersgrail"
 NEW_LISTING_WINDOW_HOURS = "48"
 
 # ─── KV: dedup posted listings + hold pending drafts ───
-# Create once with:  wrangler kv:namespace create POST_STORE
-# then paste the returned id below.
-[[kv_namespaces]]
-binding = "POST_STORE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# Required to store drafts (POST_MODE=draft) and to dedup posted listings.
+# The worker degrades gracefully without it, so this stays commented out until
+# you create the namespace — that way the auto-deploy doesn't fail on a
+# placeholder id. To enable:
+#   1. wrangler kv:namespace create POST_STORE
+#   2. uncomment the block below and paste the returned id.
+# [[kv_namespaces]]
+# binding = "POST_STORE"
+# id = "PASTE_KV_NAMESPACE_ID_HERE"
 
 # ─── Secrets (set via `wrangler secret put <NAME>`, never commit) ───
 # ANTHROPIC_API_KEY        — Claude API key (already used by the analysis endpoint)
